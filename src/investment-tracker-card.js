@@ -16,6 +16,7 @@ class InvestmentTrackerCard extends HTMLElement {
       default_service_entity: null, // Nieuw: default service entity
       ...config,
     };
+    this._assetListScroll = 0; // Track the scroll position globally
   }
 
   set hass(hass) {
@@ -33,6 +34,11 @@ class InvestmentTrackerCard extends HTMLElement {
 
   _render() {
     if (!this._hass) return;
+
+    const previousAssetList = this.content?.querySelector(".asset-list");
+    if (previousAssetList) {
+      this._assetListScroll = previousAssetList.scrollTop;
+    }
 
     const serviceEntities = this._getServiceEntities();
     const serviceEntity = this._getServiceEntity(serviceEntities);
@@ -239,6 +245,14 @@ class InvestmentTrackerCard extends HTMLElement {
       ${plan}
     `;
 
+    const newAssetList = this.content.querySelector(".asset-list");
+    if (newAssetList) {
+      newAssetList.scrollTop = this._assetListScroll;
+      newAssetList.addEventListener("scroll", () => {
+        this._assetListScroll = newAssetList.scrollTop;
+      });
+    }
+
     const refreshEl = this.content.querySelector("#refresh");
     if (refreshEl) {
       refreshEl.addEventListener("click", () => this._refresh());
@@ -300,7 +314,8 @@ class InvestmentTrackerCard extends HTMLElement {
         const refreshButton = this.config.show_asset_refresh
           ? `<button class="asset-refresh" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}">↻</button>`
           : "";
-        const remapButton = `<button class="asset-remap" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}">🛠</button>`;
+        const assetCategory = (attrs.category || attrs.type || "equity").toString().toLowerCase();
+        const remapButton = `<button class="asset-remap" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}" data-category="${assetCategory}">🛠</button>`;
         const name = this._normalizeAssetName(
           attrs.friendly_name || attrs.symbol || stateObj.entity_id,
           brokerName
@@ -352,6 +367,7 @@ class InvestmentTrackerCard extends HTMLElement {
                   <option value="commodity" style="background:#fff;color:#222;">Grondstof</option>
                   <option value="crypto" style="background:#fff;color:#222;">Crypto</option>
                   <option value="cash" style="background:#fff;color:#222;">Cash</option>
+                  <option value="fund" style="background:#fff;color:#222;">Fonds</option>
                   <option value="other" style="background:#fff;color:#222;">Overig</option>
                 </select>
               </label>
@@ -369,10 +385,11 @@ class InvestmentTrackerCard extends HTMLElement {
     setTimeout(() => {
       const remapBtns = this.content.querySelectorAll(".asset-remap");
       remapBtns.forEach((btn) => {
-        btn.onclick = (e) => {
+        btn.onclick = () => {
           const symbol = btn.getAttribute("data-symbol") || "";
           const broker = btn.getAttribute("data-broker") || "";
-          this._showRemapDialog(symbol, broker);
+          const category = btn.getAttribute("data-category") || "";
+          this._showRemapDialog(symbol, broker, category);
         };
       });
     }, 0);
@@ -380,18 +397,21 @@ class InvestmentTrackerCard extends HTMLElement {
     return `<div class="asset-list"><div class="assets-header">Assets</div>${rows}</div>`;
   }
 
-  _showRemapDialog(symbol, broker) {
+  _showRemapDialog(symbol, broker, category) {
     if (!this._remapDialog) return;
     this._remapDialog.style.display = "block";
     const modal = this._remapDialog.querySelector("#remap-modal");
     modal.style.display = "flex";
     this._remapDialog.querySelector("#remap-symbol").textContent = symbol;
     this._remapDialog.querySelector("#remap-broker").textContent = broker;
+    console.log("[investment-tracker-card] opening remap", { symbol, broker, category });
     const input = this._remapDialog.querySelector("#remap-ticker");
     const categorySelect = this._remapDialog.querySelector("#remap-category");
     input.value = "";
     input.focus();
-    categorySelect.value = "equity";
+    const normalized = String(category || "").trim().toLowerCase() || "equity";
+    const validCategories = ["equity", "etf", "bond", "commodity", "crypto", "cash", "fund", "other"];
+    categorySelect.value = validCategories.includes(normalized) ? normalized : "equity";
     const cancel = this._remapDialog.querySelector("#remap-cancel");
     const save = this._remapDialog.querySelector("#remap-save");
     const close = () => {
@@ -406,11 +426,15 @@ class InvestmentTrackerCard extends HTMLElement {
       const payload = { symbol, broker };
       if (ticker) payload.ticker = ticker;
       if (category) payload.category = category;
-      if (this._hass && (ticker || category)) {
+      if (!ticker && !category) {
+        console.log("[investment-tracker-card] remap aborted (nothing changed)", { payload });
+        input.focus();
+        return;
+      }
+      if (this._hass) {
+        console.log("[investment-tracker-card] calling remap_symbol", payload);
         this._hass.callService("investment_tracker", "remap_symbol", payload);
         close();
-      } else {
-        input.focus();
       }
     };
   }
