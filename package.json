@@ -1,0 +1,8 @@
+{
+  "name": "investment-tracker-card",
+  "version": "0.1.0",
+  "description": "Lovelace card for Investment Tracker",
+  "main": "src/investment-tracker-card.js",
+  "module": "src/investment-tracker-card.js",
+  "license": "MIT"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Investment Tracker Card",
+  "content_in_root": true,
+  "render_readme": true,
+  "filename": "src/investment-tracker-card.js"
+}
