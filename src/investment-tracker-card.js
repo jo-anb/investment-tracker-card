@@ -1,5 +1,8 @@
 /* Investment Tracker Card (skeleton) */
 class InvestmentTrackerCard extends HTMLElement {
+  _assetListScroll = 0;
+  _historyRange = "1M";
+  _historyRanges = ["1D", "1W", "1M", "3M", "1Y", "ALL"];
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -125,7 +128,7 @@ class InvestmentTrackerCard extends HTMLElement {
 
     const positions = this.config.show_positions ? this._renderPositions(assets, portfolioSymbol, brokerName) : "";
     if (this.config.show_charts && totalValueEntityId) {
-      this._loadHistory(totalValueEntityId);
+      this._loadHistory(totalValueEntityId, { range: this._historyRange });
     }
     const charts = this.config.show_charts
       ? `
@@ -134,7 +137,7 @@ class InvestmentTrackerCard extends HTMLElement {
             <div class="card-title">Portfolio Value</div>
             ${this._renderPortfolioChart(totalValueEntityId, portfolioSymbol)}
             <div class="chart-range">
-              <button>1D</button><button>1W</button><button>1M</button><button>3M</button><button>1Y</button><button>ALL</button>
+              ${this._renderRangeButtons()}
             </div>
           </div>
         </div>
@@ -197,7 +200,9 @@ class InvestmentTrackerCard extends HTMLElement {
         .bar-value { font-size: 12px; text-align: right; }
         .chart-range { display: flex; gap: 6px; flex-wrap: wrap; }
         .chart-range button { background: transparent; border: 1px solid var(--divider-color, #ddd); border-radius: 999px; padding: 4px 10px; font-size: 12px; }
-        .split-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+        .chart-range button.active { background: var(--primary-color, #1976d2); color: #fff; border-color: var(--primary-color, #1976d2); }
+        .line-grid line { stroke: rgba(0,0,0,0.08); stroke-width: 1; }
+        .split-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 16px; }
         .pie-card { background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; min-height: 180px; display: flex; flex-direction: column; gap: 8px; }
         .legend { display: flex; flex-direction: column; gap: 6px; }
         .legend-row { display: grid; grid-template-columns: 1fr 48px; gap: 8px; align-items: center; font-size: 12px; }
@@ -235,8 +240,6 @@ class InvestmentTrackerCard extends HTMLElement {
           <div class="card-title">Asset Allocation</div>
           ${allocation}
         </div>
-      </div>
-      <div class="split-row">
         <div class="pie-card">
           <div class="card-title">Sector Allocation</div>
           ${sectorAllocation}
@@ -244,6 +247,7 @@ class InvestmentTrackerCard extends HTMLElement {
       </div>
       ${plan}
     `;
+    this._bindChartRangeButtons(totalValueEntityId);
 
     const newAssetList = this.content.querySelector(".asset-list");
     if (newAssetList) {
@@ -587,9 +591,19 @@ class InvestmentTrackerCard extends HTMLElement {
     if (!entityId) {
       return `<div class="chart-placeholder">No portfolio entity found</div>`;
     }
-    const points = this._historyCache?.[entityId] || [];
+    let points = this._historyCache?.[entityId] || [];
     const status = this._historyStatus?.[entityId] || "idle";
     if (!points.length) {
+      const latestValue = this._getStateNumber(entityId);
+      if (latestValue > 0) {
+        points = [
+          { value: latestValue, time: Date.now() - 1000 * 60 * 60 * 24 },
+          { value: latestValue, time: Date.now() },
+        ];
+      }
+    }
+    const pointsAvailable = points.length > 0;
+    if (!pointsAvailable) {
       if (status === "loading" || status === "idle") {
         return `<div class="chart-placeholder">Loading portfolio history…</div>`;
       }
@@ -615,13 +629,72 @@ class InvestmentTrackerCard extends HTMLElement {
     const last = path.split(" ").slice(-1)[0] || `${width},${height}`;
     const area = `${first} ${path} ${last} ${width},${height} 0,${height}`;
     const latest = points[points.length - 1]?.value ?? 0;
+    const horizontalLines = Array.from({ length: 4 }, (_, index) => {
+      const y = (height / 3) * index;
+      return `<line x1="0" y1="${y}" x2="${width}" y2="${y}" />`;
+    }).join("");
+    const verticalLines = Array.from({ length: 4 }, (_, index) => {
+      const x = (width / 3) * index;
+      return `<line x1="${x}" y1="0" x2="${x}" y2="${height}" />`;
+    }).join("");
     return `
       <svg class="line-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        <g class="line-grid">
+          ${horizontalLines}
+          ${verticalLines}
+        </g>
         <polygon class="line-area" points="${area}" />
         <polyline class="line-path" points="${path}" />
       </svg>
       <div class="metric-foot">Latest: ${currencySymbol}${this._formatNumber(latest)}</div>
     `;
+  }
+
+  _renderRangeButtons() {
+    return this._historyRanges
+      .map((range) => {
+        const active = range === this._historyRange ? "active" : "";
+        return `<button type="button" data-range="${range}" class="${active}">${range}</button>`;
+      })
+      .join("");
+  }
+
+  _bindChartRangeButtons(entityId) {
+    if (!entityId) return;
+    const buttons = this.content?.querySelectorAll(".chart-range button") || [];
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const range = button.dataset.range;
+        if (range) {
+          this._selectHistoryRange(range, entityId);
+        }
+      });
+    });
+  }
+
+  _selectHistoryRange(range, entityId) {
+    if (!range || !entityId) return;
+    this._historyRange = range;
+    this._historyUpdated = this._historyUpdated || {};
+    this._historyStatus = this._historyStatus || {};
+    this._historyUpdated[entityId] = 0;
+    this._historyStatus[entityId] = "loading";
+    this._historyCache = this._historyCache || {};
+    this._historyCache[entityId] = [];
+    this._loadHistory(entityId, { force: true, range });
+    this._render();
+  }
+
+  _historyRangeToDays(range) {
+    const mapping = {
+      "1D": 1,
+      "1W": 7,
+      "1M": 30,
+      "3M": 90,
+      "1Y": 365,
+      "ALL": 3650,
+    };
+    return mapping[range] || 30;
   }
 
   _renderCurrencyDistribution(assets, currencySymbol) {
@@ -759,23 +832,30 @@ class InvestmentTrackerCard extends HTMLElement {
     return map[upper] ?? (upper ? `${upper} ` : "");
   }
 
-  _loadHistory(entityId) {
+  _loadHistory(entityId, options = {}) {
     if (!entityId || !this._hass?.callWS) return;
+    const { force = false, range } = options;
+    const requestedRange = range || this._historyRange;
     const now = Date.now();
     this._historyCache = this._historyCache || {};
     this._historyUpdated = this._historyUpdated || {};
     this._historyStatus = this._historyStatus || {};
     const last = this._historyUpdated[entityId] || 0;
-    if (now - last < 300000) return;
+    if (!force && now - last < 300000) return;
     this._historyUpdated[entityId] = now;
     this._historyStatus[entityId] = "loading";
+    const requestToken = `${entityId}:${requestedRange}:${now}`;
+    this._historyRequestTokens = this._historyRequestTokens || {};
+    this._historyRequestTokens[entityId] = requestToken;
     const timeoutId = setTimeout(() => {
+      if (this._historyRequestTokens[entityId] !== requestToken) return;
       if (this._historyStatus[entityId] === "loading") {
         this._historyStatus[entityId] = "empty";
         this._render();
       }
     }, 8000);
-    const start = new Date(now - 1000 * 60 * 60 * 24 * 30).toISOString();
+    const rangeDays = this._historyRangeToDays(requestedRange);
+    const start = new Date(now - 1000 * 60 * 60 * 24 * rangeDays).toISOString();
     this._hass
       .callWS({
         type: "history/period",
@@ -785,12 +865,14 @@ class InvestmentTrackerCard extends HTMLElement {
       })
       .then((response) => {
         clearTimeout(timeoutId);
+        if (this._historyRequestTokens[entityId] !== requestToken) return;
         this._handleHistoryResponse(entityId, response?.[0] || []);
       })
       .catch((err) => {
         clearTimeout(timeoutId);
+        if (this._historyRequestTokens[entityId] !== requestToken) return;
         if (err?.code === "unknown_command") {
-          this._loadHistoryRest(entityId, start);
+          this._loadHistoryRest(entityId, start, requestToken);
           return;
         }
         this._historyStatus[entityId] = "error";
@@ -800,15 +882,17 @@ class InvestmentTrackerCard extends HTMLElement {
       });
   }
 
-  _loadHistoryRest(entityId, start) {
+  _loadHistoryRest(entityId, start, requestToken) {
     if (!this._hass?.callApi) return;
     const path = `history/period/${encodeURIComponent(start)}?filter_entity_id=${encodeURIComponent(entityId)}&minimal_response=1`;
     this._hass
       .callApi("GET", path)
       .then((response) => {
+        if (this._historyRequestTokens?.[entityId] !== requestToken) return;
         this._handleHistoryResponse(entityId, response?.[0] || []);
       })
       .catch((err) => {
+        if (this._historyRequestTokens?.[entityId] !== requestToken) return;
         this._historyStatus[entityId] = "error";
         // eslint-disable-next-line no-console
         console.warn("Investment Tracker card: history fetch failed (REST)", err);
