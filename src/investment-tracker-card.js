@@ -9,6 +9,12 @@ class InvestmentTrackerCard extends HTMLElement {
   _apexChart = null;
   _apexLoadPromise = null;
   _pendingApexRender = null;
+  _remapDialogToken = null;
+  _historyDialog = null;
+  _dayChangeCache = {};
+  _dayChangeUpdated = {};
+  _dayChangeRequestTokens = {};
+  _dayChangeStatus = {};
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -60,12 +66,33 @@ class InvestmentTrackerCard extends HTMLElement {
     const totalPLEntityId = this._findTotalEntityId(brokerSlug, "total_profit_loss");
     const totalPLPctEntityId = this._findTotalEntityId(brokerSlug, "total_profit_loss_pct");
 
+    const portfolioCurrency = this._getUnit(totalValueEntityId);
+    const portfolioSymbol = this._getCurrencySymbol(portfolioCurrency);
+    this._ensureDayChange(totalValueEntityId);
+    const dayChangeInfo = this._dayChangeCache?.[totalValueEntityId];
+    const dayChangeValue = dayChangeInfo?.value;
+    const dayChangePct = dayChangeInfo?.pct;
+    const hasDayChange = Number.isFinite(dayChangeValue);
+    const dayChangeClass = hasDayChange
+      ? dayChangeValue > 0
+        ? "positive"
+        : dayChangeValue < 0
+        ? "negative"
+        : "muted"
+      : "muted";
+    const dayChangeDisplay = hasDayChange
+      ? `${dayChangeValue > 0 ? "+" : dayChangeValue < 0 ? "-" : ""}${portfolioSymbol}${this._formatNumber(
+          Math.abs(dayChangeValue)
+        )}`
+      : "-";
+    const dayChangePctDisplay = hasDayChange && Number.isFinite(dayChangePct)
+      ? `${dayChangePct >= 0 ? "+" : "-"}${this._formatNumber(Math.abs(dayChangePct))}%`
+      : null;
+    const dayChangeFoot = dayChangePctDisplay ? `<div class="metric-foot">${dayChangePctDisplay} today</div>` : "";
     const totalValue = this._formatNumber(this._getStateNumber(totalValueEntityId));
     const totalInvested = this._formatNumber(this._getStateNumber(totalInvestedEntityId));
     const totalPL = this._formatNumber(this._getStateNumber(totalPLEntityId));
     const totalPLPct = this._formatNumber(this._getStateNumber(totalPLPctEntityId));
-    const portfolioCurrency = this._getUnit(totalValueEntityId);
-    const portfolioSymbol = this._getCurrencySymbol(portfolioCurrency);
 
     const refreshButton = this.config.show_refresh
       ? `<div class="actions"><button class="refresh-btn" id="refresh">Refresh</button></div>`
@@ -120,7 +147,8 @@ class InvestmentTrackerCard extends HTMLElement {
             </div>
             <div class="metric-card">
               <div class="metric-title">Day Change</div>
-              <div class="metric-value muted">-</div>
+              <div class="metric-value ${dayChangeClass}">${dayChangeDisplay}</div>
+              ${dayChangeFoot}
             </div>
             <div class="metric-card">
               <div class="metric-title">Total Return</div>
@@ -188,12 +216,23 @@ class InvestmentTrackerCard extends HTMLElement {
         .layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
         .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; max-height: 320px; overflow: auto; }
         .assets-header { font-weight: 600; margin-bottom: 8px; }
-        .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); cursor: pointer; transition: background 0.2s ease; }
+        .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); cursor: pointer; transition: background 0.2s ease; gap: 12px; }
         .asset-row:last-child { border-bottom: 0; }
         .asset-row.selected { background: color-mix(in srgb, var(--primary-color, #1976d2) 90%, #fff); }
-        .asset-info { display: flex; flex-direction: column; gap: 4px; }
+        .asset-info { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+        .asset-name-row { display: flex; align-items: flex-start; gap: 8px; }
         .asset-name { font-weight: 600; }
+        .asset-link-button { border: 0; background: transparent; width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; padding: 4px; cursor: pointer; transition: background 0.2s ease, color 0.2s ease; align-self: flex-start; margin-left: 2px; }
+        .asset-link-button:hover { background: rgba(0, 0, 0, 0.04); }
+        .asset-link-button.mapped { color: var(--primary-color, #1976d2); }
+        .asset-link-button.unmapped { color: var(--error-color, #e53935); }
+        .asset-link-button ha-icon { width: 10px; height: 10px; }
+        .asset-history-button { border: 0; background: transparent; width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; transition: background 0.2s ease, color 0.2s ease; color: var(--secondary-text-color, #6b7280); align-self: flex-start; }
+        .asset-history-button:hover { background: rgba(0, 0, 0, 0.04); }
+        .asset-history-button ha-icon { width: 10px; height: 10px; }
         .asset-meta { font-size: 12px; opacity: 0.6; }
+        .asset-stats { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 110px; }
+        .asset-price { font-size: 13px; color: var(--secondary-text-color, #6b7280); }
         .asset-value { font-weight: 600; text-align: right; }
         .asset-pl { font-size: 12px; text-align: right; }
         .positive { color: var(--success-color, #4caf50); }
@@ -335,7 +374,6 @@ class InvestmentTrackerCard extends HTMLElement {
           ? `<button class="asset-refresh" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}">↻</button>`
           : "";
         const assetCategory = (attrs.category || attrs.type || "equity").toString().toLowerCase();
-        const remapButton = `<button class="asset-remap" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}" data-category="${assetCategory}">🛠</button>`;
         const name = this._normalizeAssetName(
           attrs.friendly_name || attrs.symbol || stateObj.entity_id,
           brokerName
@@ -345,21 +383,40 @@ class InvestmentTrackerCard extends HTMLElement {
         const value = this._formatNumber(valueRaw);
         const pl = this._formatNumber(plRaw);
         const currencySymbol = this._getCurrencySymbol(attrs.currency || "") || portfolioSymbol;
+        const priceRaw = Number(attrs.current_price ?? NaN);
+        const hasPrice = Number.isFinite(priceRaw);
+        const priceText = hasPrice ? `${currencySymbol}${this._formatNumber(priceRaw)}` : "-";
         const plClass = plRaw >= 0 ? "positive" : "negative";
         const selected = stateObj.entity_id === this._selectedAssetEntityId;
         const rowClass = `asset-row${selected ? " selected" : ""}`;
+        const isUnmapped = Boolean(attrs.unmapped);
+        const mapIcon = isUnmapped ? "mdi:link-off" : "mdi:link";
+        const mapLabel = isUnmapped
+          ? "Niet gekoppeld asset openen"
+          : "Gekoppeld asset bewerken";
+        const historyLabel = "Transactiegeschiedenis";
+        const historyButton = `<button type="button" class="asset-history-button" data-entity="${stateObj.entity_id}" title="${this._escapeAttribute(historyLabel)}" aria-label="${this._escapeAttribute(historyLabel)}"><ha-icon icon="mdi:history"></ha-icon></button>`;
+        const mapButton = `<button type="button" class="asset-link-button ${
+          isUnmapped ? "unmapped" : "mapped"
+        }" data-entity="${stateObj.entity_id}" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}" data-category="${assetCategory}" title="${this._escapeAttribute(
+          mapLabel
+        )}" aria-label="${this._escapeAttribute(mapLabel)}"><ha-icon icon="${mapIcon}"></ha-icon></button>`;
         return `
           <div class="${rowClass}" data-entity="${stateObj.entity_id}" data-name="${this._escapeAttribute(name)}" role="button" tabindex="0">
             <div class="asset-info">
-              <div class="asset-name">${name}</div>
+              <div class="asset-name-row">
+                <div class="asset-name">${name}</div>
+                ${historyButton}
+                ${mapButton}
+              </div>
               <div class="asset-meta">Qty: ${attrs.quantity ?? "-"}</div>
             </div>
-            <div>
+            <div class="asset-stats">
+              <div class="asset-price">${priceText}</div>
               <div class="asset-value">${currencySymbol}${value}</div>
               <div class="asset-pl ${plClass}">${pl !== "" ? `${pl}%` : ""}</div>
             </div>
             ${refreshButton}
-            ${remapButton}
           </div>
         `;
       })
@@ -372,6 +429,12 @@ class InvestmentTrackerCard extends HTMLElement {
       this._remapDialog.innerHTML = `
         <div id="remap-modal" style="position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.45);z-index:10000;display:flex;align-items:center;justify-content:center;">
           <div style="background:#fff;color:#222;padding:32px 28px 24px 28px;border-radius:16px;min-width:340px;max-width:95vw;box-shadow:0 4px 32px #0004;display:flex;flex-direction:column;gap:18px;">
+            <style>
+              .remap-suggestions { display:flex;flex-direction:column;gap:6px;margin-top:0; }
+              .remap-suggestion-list { display:flex;flex-direction:column;gap:6px; }
+              .remap-suggestion { border:1px solid #d1d5db;border-radius:12px;padding:8px 10px;background:#fff;text-align:left;font-size:13px;color:#111;cursor:pointer;transition:background 0.2s ease,border-color 0.2s ease; }
+              .remap-suggestion.selected { border-color:#2563eb;background:#e0e7ff; }
+            </style>
             <h3 style="margin:0 0 8px 0;font-size:1.3em;font-weight:700;color:#1a1a1a;">Asset aanpassen</h3>
             <div style="margin-bottom:8px;font-size:15px;">
               <label style="font-weight:500;">Symbool: <span id="remap-symbol" style="font-weight:400;color:#444;"></span></label><br/>
@@ -394,6 +457,11 @@ class InvestmentTrackerCard extends HTMLElement {
                 </select>
               </label>
             </div>
+            <div class="remap-suggestions" style="margin-top:4px;">
+              <div style="font-weight:600;font-size:14px;">Yahoo suggesties</div>
+              <div id="remap-suggestion-list" class="remap-suggestion-list"></div>
+              <div id="remap-suggestion-message" style="font-size:13px;color:#555;">Selecteer een matching ticker of voer een Yahoo symbool in.</div>
+            </div>
             <div style="display:flex;gap:16px;justify-content:flex-end;margin-top:8px;">
               <button id="remap-cancel" style="padding:8px 18px;border-radius:8px;border:0;background:#eee;color:#333;font-size:15px;cursor:pointer;">Annuleren</button>
               <button id="remap-save" style="padding:8px 18px;border-radius:8px;border:0;background:#1976d2;color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Opslaan</button>
@@ -405,27 +473,35 @@ class InvestmentTrackerCard extends HTMLElement {
     }
     // Event listeners voor remap-knoppen
     setTimeout(() => {
-      const remapBtns = this.content.querySelectorAll(".asset-remap");
+      const remapBtns = this.content.querySelectorAll(".asset-link-button");
       remapBtns.forEach((btn) => {
         btn.onclick = () => {
           const symbol = btn.getAttribute("data-symbol") || "";
           const broker = btn.getAttribute("data-broker") || "";
           const category = btn.getAttribute("data-category") || "";
-          this._showRemapDialog(symbol, broker, category);
+          const entityId = btn.getAttribute("data-entity") || null;
+          this._showRemapDialog(symbol, broker, category, entityId);
         };
       });
+        const historyBtns = this.content.querySelectorAll(".asset-history-button");
+        historyBtns.forEach((btn) => {
+          btn.onclick = () => {
+            const entityId = btn.getAttribute("data-entity") || null;
+            this._showAssetHistoryDialog(entityId);
+          };
+        });
     }, 0);
 
     return `<div class="asset-list"><div class="assets-header">Assets</div>${rows}</div>`;
   }
 
-  _showRemapDialog(symbol, broker, category) {
+  _showRemapDialog(symbol, broker, category, entityId) {
     if (!this._remapDialog) return;
     this._remapDialog.style.display = "block";
     const modal = this._remapDialog.querySelector("#remap-modal");
     modal.style.display = "flex";
-    this._remapDialog.querySelector("#remap-symbol").textContent = symbol;
-    this._remapDialog.querySelector("#remap-broker").textContent = broker;
+    this._remapDialog.querySelector("#remap-symbol").textContent = symbol || "-";
+    this._remapDialog.querySelector("#remap-broker").textContent = broker || "-";
     console.log("[investment-tracker-card] opening remap", { symbol, broker, category });
     const input = this._remapDialog.querySelector("#remap-ticker");
     const categorySelect = this._remapDialog.querySelector("#remap-category");
@@ -459,6 +535,220 @@ class InvestmentTrackerCard extends HTMLElement {
         close();
       }
     };
+
+    const normalizedSymbol = String(symbol || "").trim();
+    const entityState = entityId ? this._hass?.states?.[entityId] : null;
+    const suggestions = entityState?.attributes?.repair_suggestions;
+    this._loadRemapSuggestions(normalizedSymbol, suggestions);
+  }
+
+  _showAssetHistoryDialog(entityId) {
+    if (!this._hass || !entityId) return;
+    if (!this._historyDialog) {
+      this._historyDialog = document.createElement("div");
+      this._historyDialog.style.display = "none";
+      this._historyDialog.innerHTML = `
+        <div id="history-modal" style="position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.45);z-index:10000;display:none;align-items:center;justify-content:center;">
+          <div class="history-panel" style="background:#fff;color:#222;padding:24px 20px 18px;border-radius:16px;min-width:320px;max-width:90vw;box-shadow:0 4px 32px #0004;">
+            <style>
+              .history-panel { display:flex;flex-direction:column;gap:12px; }
+              .history-head { display:flex;justify-content:space-between;align-items:flex-start;gap:12px; }
+              .history-head h3 { margin:0;font-size:1.2em;font-weight:700; }
+              .history-head button { border:0;background:#eee;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer; }
+              .history-meta { display:flex;flex-wrap:wrap;gap:10px;font-size:12px;opacity:0.7; }
+              .history-meta span { font-weight:600; }
+              .history-content { max-height:280px;overflow:auto; }
+              .history-list { display:flex;flex-direction:column;gap:6px; }
+              .history-row { display:grid;grid-template-columns:1.6fr 0.8fr 0.8fr 1fr;gap:6px;align-items:center;font-size:13px;padding:6px 0;border-bottom:1px solid #f0f0f0; }
+              .history-row:last-child { border-bottom:0; }
+              .history-row-header { font-weight:600;opacity:0.8;border-bottom:none; }
+              .history-empty { font-size:13px;opacity:0.65;display:flex;justify-content:center;padding:12px 0; }
+            </style>
+            <div class="history-head">
+              <h3>Transactiegeschiedenis</h3>
+              <button id="history-close" type="button">Sluiten</button>
+            </div>
+            <div class="history-meta">
+              <div>Symbool: <span id="history-symbol">-</span></div>
+              <div id="history-count">Geen transacties</div>
+            </div>
+            <div class="history-content">
+              <div id="history-content"></div>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(this._historyDialog);
+    }
+    const modal = this._historyDialog.querySelector("#history-modal");
+    const closeBtn = this._historyDialog.querySelector("#history-close");
+    const close = () => {
+      this._historyDialog.style.display = "none";
+      if (modal) modal.style.display = "none";
+    };
+    if (closeBtn) closeBtn.onclick = close;
+    if (modal) {
+      modal.onclick = (event) => {
+        if (event.target === modal) close();
+      };
+      modal.style.display = "flex";
+    }
+    this._historyDialog.style.display = "block";
+    const symbolLabel = this._historyDialog.querySelector("#history-symbol");
+    const countLabel = this._historyDialog.querySelector("#history-count");
+    const content = this._historyDialog.querySelector("#history-content");
+    const state = this._hass.states?.[entityId];
+    const transactions = Array.isArray(state?.attributes?.transactions) ? state.attributes.transactions : [];
+    if (symbolLabel) symbolLabel.textContent = state?.attributes?.symbol || state?.entity_id || "-";
+    if (countLabel) {
+      countLabel.textContent = transactions.length
+        ? `${transactions.length} transacties`
+        : "Geen transacties";
+    }
+    if (content) {
+      content.innerHTML = this._renderAssetHistory(transactions);
+    }
+  }
+
+  _loadRemapSuggestions(symbol, storedSuggestions = null) {
+    if (!this._remapDialog) return;
+    const list = this._remapDialog.querySelector("#remap-suggestion-list");
+    const message = this._remapDialog.querySelector("#remap-suggestion-message");
+    if (!list || !message) return;
+    const normalized = String(symbol || "").trim();
+    if (!normalized) {
+      this._remapDialogToken = null;
+      this._renderRemapSuggestions([], "Symbool ontbreekt.");
+      return;
+    }
+    const cached = Array.isArray(storedSuggestions) ? storedSuggestions.slice(0, 5) : [];
+    if (cached.length) {
+      this._remapDialogToken = null;
+      this._renderRemapSuggestions(cached);
+      return;
+    }
+    message.textContent = "Zoekt naar Yahoo suggesties…";
+    list.innerHTML = "";
+    const token = `${normalized}:${Date.now()}`;
+    this._remapDialogToken = token;
+    if (!this._hass?.callApi) {
+      this._renderRemapSuggestions([], "Suggesties niet beschikbaar.");
+      return;
+    }
+    this._hass
+      .callApi("GET", "investment_tracker/search_symbols", { symbol: normalized })
+      .then((response) => {
+        if (this._remapDialogToken !== token) return;
+        const results = Array.isArray(response?.results) ? response.results : [];
+        this._renderRemapSuggestions(results);
+      })
+      .catch(() => {
+        if (this._remapDialogToken !== token) return;
+        this._renderRemapSuggestions([], "Suggesties tijdelijk niet beschikbaar.");
+      });
+  }
+
+  _renderRemapSuggestions(results, fallbackMessage) {
+    if (!this._remapDialog) return;
+    const list = this._remapDialog.querySelector("#remap-suggestion-list");
+    const message = this._remapDialog.querySelector("#remap-suggestion-message");
+    if (!list || !message) return;
+    const hits = Array.isArray(results) ? results.slice(0, 5) : [];
+    if (!hits.length) {
+      message.textContent = fallbackMessage || "Geen suggesties gevonden.";
+      list.innerHTML = "";
+      return;
+    }
+    message.textContent = "Klik op een suggestie om het Yahoo-symbool in te vullen.";
+    const buttons = hits
+      .filter((hit) => hit && hit.symbol)
+      .map((hit) => {
+        const ticker = String(hit.symbol || "").trim();
+        const shortName = String(hit.shortName || hit.longName || hit.shortname || hit.longname || hit.name || "").trim();
+        const descriptor = String(hit.quoteType || hit.industry || hit.sector || "").trim();
+        const displayName = shortName || descriptor || ticker;
+        const exchange = String(hit.exchange || hit.exchDisp || hit.exchangeDisp || "").trim() || "onbekend";
+        const label = `${ticker} - (${displayName} · ${exchange})`;
+        return `<button type="button" class="remap-suggestion" data-remap-ticker="${this._escapeAttribute(ticker)}">${this._escapeHtml(label)}</button>`;
+      })
+      .join("");
+    if (!buttons) {
+      message.textContent = fallbackMessage || "Geen suggesties gevonden.";
+      list.innerHTML = "";
+      return;
+    }
+    list.innerHTML = buttons;
+    const suggestionButtons = list.querySelectorAll(".remap-suggestion");
+    const input = this._remapDialog.querySelector("#remap-ticker");
+    suggestionButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const ticker = button.dataset.remapTicker || "";
+        if (!input) return;
+        input.value = ticker;
+        suggestionButtons.forEach((btn) => btn.classList.remove("selected"));
+        button.classList.add("selected");
+      });
+    });
+  }
+
+  _renderAssetHistory(transactions) {
+    const rows = Array.isArray(transactions) ? [...transactions] : [];
+    if (!rows.length) {
+      return `<div class="history-empty">Geen transacties beschikbaar.</div>`;
+    }
+    const sorted = rows
+      .slice()
+      .sort((a, b) => {
+        const aTime = Date.parse(a?.date || "") || 0;
+        const bTime = Date.parse(b?.date || "") || 0;
+        return bTime - aTime;
+      })
+      .map((tx) => {
+        const qtyValue = Number(tx?.quantity ?? NaN);
+        const actionLabel = tx?.type
+          ? String(tx.type)
+          : qtyValue < 0
+          ? "Verkoop"
+          : "Koop";
+        const normalizedAction = actionLabel ? `${actionLabel.charAt(0).toUpperCase()}${actionLabel.slice(1)}` : "";
+        const currencySymbol = this._getCurrencySymbol(tx?.currency || "");
+        const qtyText = Number.isFinite(qtyValue) ? this._formatNumber(Math.abs(qtyValue)) : "-";
+        const priceValue = Number(tx?.price ?? NaN);
+        const priceText = Number.isFinite(priceValue)
+          ? `${currencySymbol}${this._formatNumber(Math.abs(priceValue))}`
+          : "-";
+        return `
+          <div class="history-row">
+            <span class="history-col history-col-date">${this._escapeHtml(this._formatTransactionDate(tx?.date))}</span>
+            <span class="history-col history-col-action">${this._escapeHtml(normalizedAction)}</span>
+            <span class="history-col history-col-qty">${qtyText}</span>
+            <span class="history-col history-col-price">${priceText}</span>
+          </div>
+        `;
+      })
+      .join("");
+    const header = `
+      <div class="history-row history-row-header">
+        <span class="history-col history-col-date">Datum</span>
+        <span class="history-col history-col-action">Actie</span>
+        <span class="history-col history-col-qty">Aantal</span>
+        <span class="history-col history-col-price">Prijs</span>
+      </div>
+    `;
+    return `<div class="history-list">${header}${sorted}</div>`;
+  }
+
+  _formatTransactionDate(value) {
+    if (!value) return "-";
+    const parsed = Date.parse(String(value));
+    if (!Number.isFinite(parsed)) return String(value);
+    return new Date(parsed).toLocaleString(undefined, {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
 
   _renderPlan(serviceState, currencySymbol) {
@@ -1076,6 +1366,66 @@ class InvestmentTrackerCard extends HTMLElement {
         console.warn("Investment Tracker card: history fetch failed (REST)", err);
         this._render();
       });
+  }
+
+  _ensureDayChange(entityId) {
+    if (!entityId || !this._hass?.callWS) return;
+    this._dayChangeUpdated = this._dayChangeUpdated || {};
+    this._dayChangeRequestTokens = this._dayChangeRequestTokens || {};
+    const now = Date.now();
+    const last = this._dayChangeUpdated[entityId] || 0;
+    if (now - last < 300000 && this._dayChangeCache?.[entityId]) {
+      return;
+    }
+    this._dayChangeUpdated[entityId] = now;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0, 0);
+    const startIso = start.toISOString();
+    const requestToken = `${entityId}:${startIso}:${now}`;
+    this._dayChangeRequestTokens[entityId] = requestToken;
+    this._dayChangeStatus = this._dayChangeStatus || {};
+    this._dayChangeStatus[entityId] = "loading";
+    this._hass
+      .callWS({
+        type: "history/period",
+        start_time: startIso,
+        filter_entity_id: [entityId],
+        minimal_response: true,
+      })
+      .then((response) => {
+        if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
+        this._dayChangeStatus[entityId] = "ready";
+        this._handleDayChangeResponse(entityId, response?.[0] || []);
+      })
+      .catch((err) => {
+        if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
+        this._dayChangeStatus[entityId] = "error";
+        // eslint-disable-next-line no-console
+        console.warn("Investment Tracker card: day change fetch failed", err);
+        this._render();
+      });
+  }
+
+  _handleDayChangeResponse(entityId, entries) {
+    const points = (entries || [])
+      .map((entry) => ({
+        value: this._parseNumber(entry.s ?? entry.state),
+        time: entry.lu || entry.last_updated || entry.last_changed || entry.t,
+      }))
+      .filter((point) => Number.isFinite(point.value))
+      .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    this._dayChangeCache = this._dayChangeCache || {};
+    if (!points.length) {
+      this._dayChangeCache[entityId] = null;
+      this._render();
+      return;
+    }
+    const startValue = points[0].value;
+    const latestValue = points[points.length - 1].value;
+    const change = latestValue - startValue;
+    const pct = startValue ? (change / startValue) * 100 : 0;
+    this._dayChangeCache[entityId] = { value: change, pct };
+    this._render();
   }
 
   _handleHistoryResponse(entityId, entries) {
