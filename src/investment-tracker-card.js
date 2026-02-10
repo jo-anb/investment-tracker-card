@@ -3,6 +3,9 @@ class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
   _historyRange = "1M";
   _historyRanges = ["1D", "1W", "1M", "3M", "1Y", "ALL"];
+  _selectedAssetEntityId = null;
+  _selectedAssetName = null;
+  _portfolioEntityId = null;
   _apexChart = null;
   _apexLoadPromise = null;
   _pendingApexRender = null;
@@ -131,18 +134,20 @@ class InvestmentTrackerCard extends HTMLElement {
 
     const positions = this.config.show_positions ? this._renderPositions(assets, portfolioSymbol, brokerName) : "";
     const chartsEnabled = this.config.show_charts && totalValueEntityId;
-    const chartEntityId = chartsEnabled ? totalValueEntityId : null;
-    if (chartsEnabled) {
-      this._loadHistory(chartEntityId, { range: this._historyRange });
+    this._portfolioEntityId = totalValueEntityId;
+    const activeChartEntity = chartsEnabled ? (this._selectedAssetEntityId || totalValueEntityId) : null;
+    if (activeChartEntity) {
+      this._loadHistory(activeChartEntity, { range: this._historyRange });
     } else {
       this._destroyApexChart();
     }
+    const chartTitle = this._selectedAssetName ? `Portfolio - ${this._escapeHtml(this._selectedAssetName)}` : "Portfolio";
     const charts = this.config.show_charts
       ? `
         <div class="charts">
           <div class="chart-card">
-            <div class="card-title">Portfolio Value</div>
-            ${this._renderPortfolioChart(totalValueEntityId, portfolioSymbol)}
+            <div class="card-title">${chartTitle}</div>
+              ${this._renderPortfolioChart(activeChartEntity, portfolioSymbol)}
             <div class="chart-range">
               ${this._renderRangeButtons()}
             </div>
@@ -183,8 +188,9 @@ class InvestmentTrackerCard extends HTMLElement {
         .layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
         .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; max-height: 320px; overflow: auto; }
         .assets-header { font-weight: 600; margin-bottom: 8px; }
-        .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); }
+        .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); cursor: pointer; transition: background 0.2s ease; }
         .asset-row:last-child { border-bottom: 0; }
+        .asset-row.selected { background: color-mix(in srgb, var(--primary-color, #1976d2) 90%, #fff); }
         .asset-info { display: flex; flex-direction: column; gap: 4px; }
         .asset-name { font-weight: 600; }
         .asset-meta { font-size: 12px; opacity: 0.6; }
@@ -252,10 +258,10 @@ class InvestmentTrackerCard extends HTMLElement {
       </div>
       ${plan}
     `;
-    if (chartEntityId) {
-      this._scheduleApexChartRender(chartEntityId, portfolioSymbol);
+    if (activeChartEntity) {
+      this._scheduleApexChartRender(activeChartEntity, portfolioSymbol);
     }
-    this._bindChartRangeButtons(totalValueEntityId);
+    this._bindChartRangeButtons(activeChartEntity);
 
     const newAssetList = this.content.querySelector(".asset-list");
     if (newAssetList) {
@@ -264,6 +270,8 @@ class InvestmentTrackerCard extends HTMLElement {
         this._assetListScroll = newAssetList.scrollTop;
       });
     }
+
+    this._bindAssetSelection();
 
     const refreshEl = this.content.querySelector("#refresh");
     if (refreshEl) {
@@ -338,8 +346,10 @@ class InvestmentTrackerCard extends HTMLElement {
         const pl = this._formatNumber(plRaw);
         const currencySymbol = this._getCurrencySymbol(attrs.currency || "") || portfolioSymbol;
         const plClass = plRaw >= 0 ? "positive" : "negative";
+        const selected = stateObj.entity_id === this._selectedAssetEntityId;
+        const rowClass = `asset-row${selected ? " selected" : ""}`;
         return `
-          <div class="asset-row">
+          <div class="${rowClass}" data-entity="${stateObj.entity_id}" data-name="${this._escapeAttribute(name)}" role="button" tabindex="0">
             <div class="asset-info">
               <div class="asset-name">${name}</div>
               <div class="asset-meta">Qty: ${attrs.quantity ?? "-"}</div>
@@ -533,6 +543,20 @@ class InvestmentTrackerCard extends HTMLElement {
     return name;
   }
 
+  _escapeAttribute(value) {
+    return (value ?? "").toString().replace(/"/g, "&quot;");
+  }
+
+  _escapeHtml(value) {
+    return (value ?? "")
+      .toString()
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   _getServiceEntities() {
     const states = this._hass.states;
     return Object.values(states)
@@ -706,6 +730,11 @@ class InvestmentTrackerCard extends HTMLElement {
         y: {
           formatter: formatValue,
         },
+        theme: "dark",
+        style: {
+          fontSize: "13px",
+          background: "rgba(15, 23, 42, 0.92)",
+        },
       },
       xaxis: {
         type: "datetime",
@@ -785,6 +814,42 @@ class InvestmentTrackerCard extends HTMLElement {
         }
       });
     });
+  }
+
+  _bindAssetSelection() {
+    const rows = this.content?.querySelectorAll(".asset-row") || [];
+    rows.forEach((row) => {
+      const handleSelection = (event) => {
+        if (event?.target?.closest("button")) return;
+        const entityId = row.getAttribute("data-entity");
+        const name = row.getAttribute("data-name") || "";
+        if (entityId) {
+          this._selectAsset(entityId, name);
+        }
+      };
+      row.addEventListener("click", handleSelection);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          handleSelection(event);
+        }
+      });
+    });
+  }
+
+  _selectAsset(entityId, name) {
+    const alreadySelected = this._selectedAssetEntityId === entityId;
+    this._selectedAssetEntityId = alreadySelected ? null : entityId;
+    this._selectedAssetName = alreadySelected ? null : name || null;
+    const targetEntity = this._selectedAssetEntityId || this._portfolioEntityId;
+    if (targetEntity) {
+      this._historyUpdated = this._historyUpdated || {};
+      this._historyStatus = this._historyStatus || {};
+      this._historyUpdated[targetEntity] = 0;
+      this._historyStatus[targetEntity] = "loading";
+      this._loadHistory(targetEntity, { force: true, range: this._historyRange });
+    }
+    this._render();
   }
 
   _selectHistoryRange(range, entityId) {
