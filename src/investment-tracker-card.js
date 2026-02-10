@@ -3,6 +3,9 @@ class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
   _historyRange = "1M";
   _historyRanges = ["1D", "1W", "1M", "3M", "1Y", "ALL"];
+  _apexChart = null;
+  _apexLoadPromise = null;
+  _pendingApexRender = null;
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -127,8 +130,12 @@ class InvestmentTrackerCard extends HTMLElement {
       : "";
 
     const positions = this.config.show_positions ? this._renderPositions(assets, portfolioSymbol, brokerName) : "";
-    if (this.config.show_charts && totalValueEntityId) {
-      this._loadHistory(totalValueEntityId, { range: this._historyRange });
+    const chartsEnabled = this.config.show_charts && totalValueEntityId;
+    const chartEntityId = chartsEnabled ? totalValueEntityId : null;
+    if (chartsEnabled) {
+      this._loadHistory(chartEntityId, { range: this._historyRange });
+    } else {
+      this._destroyApexChart();
     }
     const charts = this.config.show_charts
       ? `
@@ -189,9 +196,8 @@ class InvestmentTrackerCard extends HTMLElement {
         .chart-card { background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; min-height: 320px; display: flex; flex-direction: column; gap: 12px; }
         .card-title { font-weight: 600; }
         .chart-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; opacity: 0.5; }
-        .line-chart { width: 100%; height: 180px; }
-        .line-path { fill: none; stroke: var(--accent-color, #41bdf5); stroke-width: 2; }
-        .line-area { fill: color-mix(in srgb, var(--accent-color, #41bdf5) 25%, transparent); }
+        .apex-chart { width: 100%; height: 240px; position: relative; }
+        .chart-message { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--secondary-text-color, #6b7280); }
         .bar-list { display: flex; flex-direction: column; gap: 8px; }
         .bar-row { display: grid; grid-template-columns: 1fr 60px; gap: 8px; align-items: center; }
         .bar-label { font-size: 12px; }
@@ -201,7 +207,6 @@ class InvestmentTrackerCard extends HTMLElement {
         .chart-range { display: flex; gap: 6px; flex-wrap: wrap; }
         .chart-range button { background: transparent; border: 1px solid var(--divider-color, #ddd); border-radius: 999px; padding: 4px 10px; font-size: 12px; }
         .chart-range button.active { background: var(--primary-color, #1976d2); color: #fff; border-color: var(--primary-color, #1976d2); }
-        .line-grid line { stroke: rgba(0,0,0,0.08); stroke-width: 1; }
         .split-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 16px; }
         .pie-card { background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; min-height: 180px; display: flex; flex-direction: column; gap: 8px; }
         .legend { display: flex; flex-direction: column; gap: 6px; }
@@ -247,6 +252,9 @@ class InvestmentTrackerCard extends HTMLElement {
       </div>
       ${plan}
     `;
+    if (chartEntityId) {
+      this._scheduleApexChartRender(chartEntityId, portfolioSymbol);
+    }
     this._bindChartRangeButtons(totalValueEntityId);
 
     const newAssetList = this.content.querySelector(".asset-list");
@@ -591,62 +599,23 @@ class InvestmentTrackerCard extends HTMLElement {
     if (!entityId) {
       return `<div class="chart-placeholder">No portfolio entity found</div>`;
     }
-    let points = this._historyCache?.[entityId] || [];
+    const points = this._historyCache?.[entityId] || [];
     const status = this._historyStatus?.[entityId] || "idle";
-    if (!points.length) {
-      const latestValue = this._getStateNumber(entityId);
-      if (latestValue > 0) {
-        points = [
-          { value: latestValue, time: Date.now() - 1000 * 60 * 60 * 24 },
-          { value: latestValue, time: Date.now() },
-        ];
-      }
-    }
-    const pointsAvailable = points.length > 0;
-    if (!pointsAvailable) {
-      if (status === "loading" || status === "idle") {
-        return `<div class="chart-placeholder">Loading portfolio history…</div>`;
-      }
-      if (status === "empty") {
-        return `<div class="chart-placeholder">No history data yet</div>`;
-      }
-      return `<div class="chart-placeholder">History unavailable</div>`;
-    }
-    const values = points.map((point) => point.value);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const span = max - min || 1;
-    const width = 100;
-    const height = 160;
-    const path = points
-      .map((point, index) => {
-        const x = (index / (points.length - 1 || 1)) * width;
-        const y = height - ((point.value - min) / span) * height;
-        return `${x},${y}`;
-      })
-      .join(" ");
-    const first = path.split(" ")[0] || `0,${height}`;
-    const last = path.split(" ").slice(-1)[0] || `${width},${height}`;
-    const area = `${first} ${path} ${last} ${width},${height} 0,${height}`;
-    const latest = points[points.length - 1]?.value ?? 0;
-    const horizontalLines = Array.from({ length: 4 }, (_, index) => {
-      const y = (height / 3) * index;
-      return `<line x1="0" y1="${y}" x2="${width}" y2="${y}" />`;
-    }).join("");
-    const verticalLines = Array.from({ length: 4 }, (_, index) => {
-      const x = (width / 3) * index;
-      return `<line x1="${x}" y1="0" x2="${x}" y2="${height}" />`;
-    }).join("");
+    const hasData = points.length > 0;
+    const latestValue = hasData ? points[points.length - 1].value : this._getStateNumber(entityId);
+    const statusMessage = hasData
+      ? ""
+      : status === "loading" || status === "idle"
+      ? "Loading portfolio history…"
+      : status === "empty"
+      ? "No history data yet"
+      : "History unavailable";
+    const containerId = this._chartContainerId(entityId);
     return `
-      <svg class="line-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-        <g class="line-grid">
-          ${horizontalLines}
-          ${verticalLines}
-        </g>
-        <polygon class="line-area" points="${area}" />
-        <polyline class="line-path" points="${path}" />
-      </svg>
-      <div class="metric-foot">Latest: ${currencySymbol}${this._formatNumber(latest)}</div>
+      <div class="apex-chart" id="${containerId}">
+        ${statusMessage ? `<div class="chart-message">${statusMessage}</div>` : ""}
+      </div>
+      <div class="metric-foot">Latest: ${currencySymbol}${this._formatNumber(latestValue)}</div>
     `;
   }
 
@@ -657,6 +626,152 @@ class InvestmentTrackerCard extends HTMLElement {
         return `<button type="button" data-range="${range}" class="${active}">${range}</button>`;
       })
       .join("");
+  }
+
+  _scheduleApexChartRender(entityId, currencySymbol) {
+    if (!entityId) return;
+    this._pendingApexRender = { entityId, currencySymbol };
+    const trigger = () => {
+      const info = this._pendingApexRender;
+      this._pendingApexRender = null;
+      if (info) {
+        this._renderApexChart(info.entityId, info.currencySymbol);
+      }
+    };
+    const raf = typeof window !== "undefined" && window.requestAnimationFrame?.bind(window);
+    if (raf) {
+      raf(trigger);
+    } else {
+      setTimeout(trigger, 0);
+    }
+  }
+
+  async _renderApexChart(entityId, currencySymbol) {
+    if (!entityId || !this.content) return;
+    const container = this.content.querySelector(`#${this._chartContainerId(entityId)}`);
+    if (!container) return;
+    const points = this._historyCache?.[entityId] || [];
+    if (!points.length) {
+      this._destroyApexChart();
+      return;
+    }
+    container.innerHTML = "";
+    try {
+      await this._ensureApexLoaded();
+    } catch (err) {
+      container.innerHTML = `<div class="chart-message">Chart library unavailable</div>`;
+      return;
+    }
+    const accentColor = this._getCssColor("--primary-color") || "#2563eb";
+    const now = Date.now();
+    const rangeDays = this._historyRangeToDays(this._historyRange);
+    const rangeMs = Math.max(rangeDays, 1) * 24 * 60 * 60 * 1000;
+    const rangeStart = now - rangeMs;
+    let series = points.map((point) => ({
+      x: new Date(point.time).getTime(),
+      y: Number(point.value),
+    }));
+    if (series.length && series[0].x > rangeStart) {
+      series = [{ x: rangeStart, y: series[0].y }, ...series];
+    }
+    this._destroyApexChart();
+    const formatValue = (value) => `${currencySymbol}${this._formatNumber(value)}`;
+    const options = {
+      chart: {
+        type: "area",
+        height: 240,
+        toolbar: { show: false },
+        animations: { enabled: true, easing: "easeinout", speed: 420 },
+        fontFamily: "inherit",
+      },
+      series: [
+        {
+          name: "Portfolio",
+          data: series,
+        },
+      ],
+      stroke: { curve: "smooth", width: 2.5 },
+      fill: {
+        type: "gradient",
+        gradient: {
+          shadeIntensity: 1,
+          opacityFrom: 0.55,
+          opacityTo: 0,
+          stops: [0, 90, 100],
+        },
+      },
+      colors: [accentColor],
+      markers: { size: 0 },
+      tooltip: {
+        y: {
+          formatter: formatValue,
+        },
+      },
+      xaxis: {
+        type: "datetime",
+        min: rangeStart,
+        max: now,
+        axisBorder: { show: false },
+        axisTicks: { show: false },
+        labels: {
+          style: { colors: "var(--primary-text-color, #111)", fontSize: "11px" },
+          datetimeUTC: false,
+        },
+      },
+      yaxis: {
+        labels: {
+          formatter: formatValue,
+          style: { colors: "var(--primary-text-color, #111)", fontSize: "11px" },
+        },
+      },
+      grid: {
+        strokeDashArray: 4,
+        borderColor: "rgba(15, 23, 42, 0.08)",
+      },
+    };
+    this._apexChart = new ApexCharts(container, options);
+    this._apexChart.render();
+  }
+
+  _ensureApexLoaded() {
+    if (typeof window !== "undefined" && window.ApexCharts) {
+      return Promise.resolve();
+    }
+    if (this._apexLoadPromise) return this._apexLoadPromise;
+    this._apexLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/apexcharts@3.35.3";
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load ApexCharts"));
+      document.head.appendChild(script);
+    });
+    return this._apexLoadPromise;
+  }
+
+  _getCssColor(variable) {
+    if (typeof window === "undefined" || !window.getComputedStyle) return "";
+    const value = getComputedStyle(document.documentElement).getPropertyValue(variable);
+    return value ? value.trim() : "";
+  }
+
+  _destroyApexChart() {
+    if (this._apexChart) {
+      try {
+        this._apexChart.destroy();
+      } catch (err) {
+        // ignore
+      }
+      this._apexChart = null;
+    }
+  }
+
+  _chartContainerId(entityId) {
+    const safe = String(entityId || "")
+      .replace(/[^a-zA-Z0-9_-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return `portfolio-chart-${safe || "default"}`;
   }
 
   _bindChartRangeButtons(entityId) {
@@ -679,8 +794,6 @@ class InvestmentTrackerCard extends HTMLElement {
     this._historyStatus = this._historyStatus || {};
     this._historyUpdated[entityId] = 0;
     this._historyStatus[entityId] = "loading";
-    this._historyCache = this._historyCache || {};
-    this._historyCache[entityId] = [];
     this._loadHistory(entityId, { force: true, range });
     this._render();
   }
@@ -912,8 +1025,11 @@ class InvestmentTrackerCard extends HTMLElement {
         const bt = new Date(b.time).getTime();
         return at - bt;
       });
+    const previousPoints = this._historyCache?.[entityId] || [];
     if (points.length) {
       this._historyCache[entityId] = points;
+      this._historyStatus[entityId] = "ready";
+    } else if (previousPoints.length) {
       this._historyStatus[entityId] = "ready";
     } else {
       this._historyStatus[entityId] = "empty";
