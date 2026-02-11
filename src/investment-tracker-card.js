@@ -8,6 +8,13 @@ const SETTINGS_FIELDS = [
   { key: "show_plan", label: "Toon investeringsplan" },
 ];
 
+const PLAN_FREQUENCIES = [
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "quarterly", label: "Quarterly" },
+  { value: "yearly", label: "Yearly" },
+];
+
 /* Investment Tracker Card (skeleton) */
 class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
@@ -37,6 +44,18 @@ class InvestmentTrackerCard extends HTMLElement {
   _preservedAssetSearchInput = null;
   _assetFiltersOpen = false;
   _settingsDialog = null;
+  _planEditorOverlay = null;
+  _planEditorEntries = [];
+  _planEditorServiceEntryId = null;
+  _planEditorBroker = null;
+  _planEditorSaving = false;
+  _planEditorTargetInput = null;
+  _planEditorFrequencyInput = null;
+  _planEditorAssetInput = null;
+  _planEditorAssetAmountInput = null;
+  _planEditorEntryList = null;
+  _planEditorStatusContainer = null;
+  _planEditorSaveButton = null;
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -286,7 +305,7 @@ class InvestmentTrackerCard extends HTMLElement {
       `
       : "";
 
-    const plan = this.config.show_plan ? this._renderPlan(serviceState, portfolioSymbol) : "";
+    const plan = this.config.show_plan ? this._renderPlan(serviceState, portfolioSymbol, assetStates) : "";
     const currency = this._renderCurrencyDistribution(summaryAssets, portfolioSymbol);
     const allocation = this._renderAssetAllocation(summaryAssets);
     const sectorAllocation = this._renderSectorAllocation(summaryAssets);
@@ -397,12 +416,29 @@ class InvestmentTrackerCard extends HTMLElement {
         .legend-row { display: grid; grid-template-columns: 1fr 48px; gap: 8px; align-items: center; font-size: 12px; }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-color, #41bdf5); display: inline-block; margin-right: 6px; }
         .plan-card { margin-top: 16px; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; }
+        .plan-card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
+        .plan-card-edit { background: transparent; border: 1px solid rgba(15, 23, 42, 0.2); color: var(--primary-text-color, #111); border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+        .plan-card-edit:disabled { opacity: 0.5; cursor: not-allowed; }
         .plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
         .plan-metric { display: flex; flex-direction: column; gap: 4px; }
         .plan-label { font-size: 12px; opacity: 0.6; }
         .progress { height: 10px; background: rgba(0,0,0,0.08); border-radius: 999px; overflow: hidden; margin: 12px 0; }
         .progress-bar { height: 100%; background: var(--accent-color, #41bdf5); width: 0; }
-        .breakdown { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+        .plan-invested-section { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+        .plan-invested-label { font-size: 12px; opacity: 0.7; }
+        .plan-invested-bar { display: flex; height: 30px; border-radius: 999px; background: rgba(15, 23, 42, 0.05); overflow: hidden; font-size: 0; }
+        .plan-invested-empty { color: var(--secondary-text-color, #6b7280); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex: 1; }
+        .plan-invested-foot { font-size: 12px; opacity: 0.75; }
+        .plan-invested-segment { display: flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; font-weight: 600; text-transform: uppercase; border-right: 1px solid rgba(255,255,255,0.4); background: linear-gradient(90deg, var(--primary-color, #1976d2), var(--accent-color, #41bdf5)); }
+        .plan-invested-segment:last-child { border-right: none; }
+        .plan-invested-segment-label { padding: 0 4px; }
+        .plan-asset-blocks { display: grid; grid-template-columns: repeat(15, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+        .plan-asset-block { border-radius: 6px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.35); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 10px; font-weight: 600; color: var(--primary-text-color, #111); text-transform: uppercase; aspect-ratio: 2 / 1; padding: 10px 6px; }
+        .plan-asset-block-symbol { font-size: 11px; }
+        .plan-asset-block-amount { font-size: 9px; opacity: 0.85; }
+        .plan-asset-block-progress { width: 100%; height: 4px; border-radius: 999px; background: rgba(15, 23, 42, 0.1); overflow: hidden; }
+        .plan-asset-block-progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, var(--success-color, #4caf50), var(--accent-color, #41bdf5)); transition: width 0.3s ease; }
+        .plan-asset-block-empty { grid-column: 1 / -1; font-size: 11px; color: var(--secondary-text-color, #6b7280); text-align: center; padding: 4px 0; }
         @media (max-width: 900px) {
           .layout { grid-template-columns: repeat(6, minmax(0, 1fr)); }
           .asset-list { grid-column: span 6; }
@@ -453,6 +489,7 @@ class InvestmentTrackerCard extends HTMLElement {
 
     this._bindAssetSelection();
     this._bindAssetFilterControls();
+    this._bindPlanCardActions(serviceEntity);
 
     const refreshEl = this.content.querySelector("#refresh");
     if (refreshEl) {
@@ -1215,6 +1252,78 @@ class InvestmentTrackerCard extends HTMLElement {
     });
   }
 
+  _getWeekStartTimestamp(reference = Date.now()) {
+    const date = new Date(reference);
+    const day = date.getDay();
+    const offset = (day + 6) % 7;
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - offset);
+    return date.getTime();
+  }
+
+  _formatWeekStartLabel(timestamp) {
+    if (!Number.isFinite(timestamp)) return "";
+    const date = new Date(timestamp);
+    return date.toLocaleDateString(undefined, {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+    });
+  }
+
+  _parseTransactionTimestamp(value) {
+    if (!value) return null;
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+    const parsed = Date.parse(String(value));
+    if (Number.isFinite(parsed)) return parsed;
+    const fallback = new Date(String(value));
+    return Number.isFinite(fallback.getTime()) ? fallback.getTime() : null;
+  }
+
+  _normalizeSymbol(value) {
+    return (value || "").toString().trim().toUpperCase();
+  }
+
+  _calculateWeeklyInvested(assetStates, sinceTimestamp) {
+    const entries = Array.isArray(assetStates) ? assetStates : [];
+    if (!Number.isFinite(sinceTimestamp)) return {};
+    const invested = {};
+    entries.forEach((asset) => {
+      if (!asset) return;
+      const attrs = asset.attributes || {};
+      const symbol = this._normalizeSymbol(attrs.symbol || attrs.friendly_name);
+      const transactions = Array.isArray(attrs.transactions) ? attrs.transactions : [];
+      transactions.forEach((tx) => {
+        const timestamp = this._parseTransactionTimestamp(tx?.date);
+        if (!Number.isFinite(timestamp) || timestamp < sinceTimestamp) return;
+        const quantity = Number(tx?.quantity ?? NaN);
+        if (!Number.isFinite(quantity) || quantity <= 0) return;
+        const price = Number(tx?.price ?? NaN);
+        if (!Number.isFinite(price) || price <= 0) return;
+        const amount = price * quantity;
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        const key = symbol || this._normalizeSymbol(tx?.symbol);
+        if (!key) return;
+        invested[key] = (invested[key] || 0) + amount;
+      });
+    });
+    return invested;
+  }
+
+  _renderInvestedSegments(investedBySymbol, totalInvested, currencySymbol) {
+    if (!totalInvested || !Object.keys(investedBySymbol).length) return "";
+    return Object.entries(investedBySymbol)
+      .filter(([, amount]) => Number.isFinite(amount) && amount > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([symbol, amount]) => {
+        const label = symbol.length <= 4 ? symbol : symbol.slice(0, 4);
+        const tooltip = `${symbol} · ${currencySymbol}${this._formatNumber(amount)}`;
+        return `<span class="plan-invested-segment" style="flex:${amount} 1 0;" title="${this._escapeAttribute(tooltip)}"><span class="plan-invested-segment-label">${this._escapeAttribute(label)}</span></span>`;
+      })
+      .join("");
+  }
+
   _openSettingsDialog() {
     this._ensureSettingsDialog();
     if (!this._settingsDialog) return;
@@ -1390,28 +1499,55 @@ class InvestmentTrackerCard extends HTMLElement {
     saveBtn?.addEventListener("click", () => this._applySettingsChanges());
   }
 
-  _renderPlan(serviceState, currencySymbol) {
+  _renderPlan(serviceState, currencySymbol, assetStates = []) {
     const attrs = serviceState?.attributes || {};
     const total = Number(attrs.plan_total ?? 0) || 0;
     const freq = attrs.plan_frequency ? String(attrs.plan_frequency) : "monthly";
     const perAssetRaw = Array.isArray(attrs.plan_per_asset) ? attrs.plan_per_asset : [];
-    const perAsset = perAssetRaw
-      .map((item) => String(item))
-      .map((item) => {
-        const [symbol, amount] = item.split(":");
-        return { symbol: symbol?.trim(), amount: Number(amount) || 0 };
-      })
-      .filter((item) => item.symbol);
+    const perAsset = this._parsePlanPerAssetList(perAssetRaw);
     const plannedSoFar = perAsset.reduce((sum, item) => sum + (item.amount || 0), 0);
     const remaining = total > 0 ? Math.max(total - plannedSoFar, 0) : 0;
     const progress = total > 0 ? Math.min((plannedSoFar / total) * 100, 100) : 0;
-    const breakdown = perAsset
-      .map((item) => `• ${item.symbol} ${currencySymbol}${this._formatNumber(item.amount)}`)
-      .join(" ");
+    const weekStartTimestamp = this._getWeekStartTimestamp();
+    const actualInvestedBySymbol = this._calculateWeeklyInvested(assetStates, weekStartTimestamp);
+    const investedThisWeek = Object.values(actualInvestedBySymbol).reduce((sum, value) => sum + value, 0);
+    const investedSegments = this._renderInvestedSegments(actualInvestedBySymbol, investedThisWeek, currencySymbol);
+    const investedLabel = `${currencySymbol}${this._formatNumber(investedThisWeek)}`;
+    const weekLabel = this._formatWeekStartLabel(weekStartTimestamp);
+    const assetBlocks = perAsset
+      .map((item) => {
+        const symbol = (item.symbol || "").toUpperCase();
+        if (!symbol) return "";
+        const label = symbol.length <= 3 ? symbol : symbol.slice(0, 3);
+        const plannedAmount = Number.isFinite(item.amount) ? item.amount : 0;
+        const amountLabel = `${currencySymbol}${this._formatNumber(plannedAmount)}`;
+        const actualAmount = Number.isFinite(actualInvestedBySymbol[symbol]) ? actualInvestedBySymbol[symbol] : 0;
+        const ratio = plannedAmount > 0 ? Math.min((actualAmount / plannedAmount) * 100, 100) : actualAmount > 0 ? 100 : 0;
+        const statusTooltip = actualAmount
+          ? `${symbol} · Invested ${currencySymbol}${this._formatNumber(actualAmount)} this week`
+          : `${symbol} · No buys recorded this week`;
+        const tooltip = `${symbol} · Planned ${amountLabel}`;
+        return `
+          <div class="plan-asset-block" title="${this._escapeAttribute(tooltip)}">
+            <span class="plan-asset-block-symbol">${this._escapeAttribute(label)}</span>
+            <span class="plan-asset-block-amount">${this._escapeAttribute(amountLabel)}</span>
+            <div class="plan-asset-block-progress" title="${this._escapeAttribute(statusTooltip)}">
+              <div class="plan-asset-block-progress-fill" style="width:${ratio}%;"></div>
+            </div>
+          </div>
+        `;
+      })
+      .filter(Boolean)
+      .join("");
+    const serviceEntityId = serviceState?.entity_id || "";
+    const editButtonAttrs = serviceEntityId ? `data-service="${this._escapeAttribute(serviceEntityId)}"` : "disabled";
 
     return `
       <div class="plan-card">
-        <div class="card-title">Investment Plan</div>
+        <div class="plan-card-header">
+          <div class="card-title">Investment Plan</div>
+          <button type="button" class="plan-card-edit" ${editButtonAttrs}>Edit plan</button>
+        </div>
         <div class="plan-grid">
           <div class="plan-metric">
             <div class="plan-label">Target (${freq})</div>
@@ -1427,9 +1563,336 @@ class InvestmentTrackerCard extends HTMLElement {
           </div>
         </div>
         <div class="progress"><div class="progress-bar" style="width:${progress}%;"></div></div>
-        <div class="breakdown">${breakdown || "No per-asset plan provided."}</div>
+        <div class="plan-invested-section">
+          <div class="plan-invested-label">Invested since ${this._escapeAttribute(weekLabel)}</div>
+          <div class="plan-invested-bar" aria-label="Invested ${this._escapeAttribute(investedLabel)} this week">
+            ${investedSegments || `<span class="plan-invested-empty">No buys recorded this week.</span>`}
+          </div>
+          <div class="plan-invested-foot">${investedLabel} added this week</div>
+        </div>
+        <div class="plan-asset-blocks">
+          ${assetBlocks || `<div class="plan-asset-block-empty">No allocations yet. Add assets to see a visual guide.</div>`}
+        </div>
       </div>
     `;
+  }
+
+  _parsePlanPerAssetList(perAssetRaw) {
+    if (!Array.isArray(perAssetRaw)) return [];
+    return perAssetRaw
+      .map((item) => String(item))
+      .map((item) => {
+        const [symbol, amount] = item.split(":");
+        const normalizedSymbol = symbol?.trim();
+        return { symbol: normalizedSymbol ? normalizedSymbol.toUpperCase() : null, amount: Number(amount) || 0 };
+      })
+      .filter((item) => item.symbol);
+  }
+
+  _ensurePlanEditor() {
+    if (this._planEditorOverlay) return;
+    this._planEditorOverlay = document.createElement("div");
+    this._planEditorOverlay.className = "investment-tracker-plan-editor-overlay";
+    this._planEditorOverlay.tabIndex = -1;
+    this._planEditorOverlay.innerHTML = `
+      <style>
+        .investment-tracker-plan-editor-overlay {
+          position: fixed;
+          inset: 0;
+          display: none;
+          align-items: center;
+          justify-content: center;
+          background: rgba(15, 23, 42, 0.65);
+          z-index: 11000;
+        }
+        .plan-editor-panel {
+          background: var(--ha-card-background, #0f172a);
+          color: var(--primary-text-color, #f8fafc);
+          border-radius: 14px;
+          padding: 20px;
+          box-shadow: 0 24px 48px rgba(15, 23, 42, 0.35);
+          width: min(460px, 92vw);
+          max-height: 90vh;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .plan-editor-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+        }
+        .plan-editor-header h3 {
+          margin: 0;
+          font-size: 1.1rem;
+        }
+        .plan-editor-close {
+          border: none;
+          background: transparent;
+          font-size: 1.1rem;
+          cursor: pointer;
+        }
+        .plan-editor-body {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          overflow-y: auto;
+          max-height: 60vh;
+        }
+        .plan-editor-field { display: flex; flex-direction: column; gap: 4px; }
+        .plan-editor-field label { font-size: 12px; opacity: 0.8; }
+        .plan-editor-field input,
+        .plan-editor-field select { border-radius: 8px; border: 1px solid rgba(248, 250, 252, 0.2); padding: 8px 10px; font-size: 14px; background: rgba(248, 250, 252, 0.05); color: var(--primary-text-color, #f8fafc); }
+        .plan-entry-list { display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
+        .plan-entry-row { display: flex; gap: 8px; align-items: center; }
+        .plan-entry-row input { border-radius: 6px; border: 1px solid rgba(248, 250, 252, 0.2); padding: 6px 10px; font-size: 13px; background: rgba(248, 250, 252, 0.05); color: var(--primary-text-color, #f8fafc); }
+        .plan-entry-symbol { flex: 1; }
+        .plan-entry-amount { width: 110px; }
+        .plan-entry-remove { border: none; background: rgba(248, 250, 252, 0.1); border-radius: 50%; width: 26px; height: 26px; cursor: pointer; font-size: 12px; color: var(--primary-text-color, #f8fafc); }
+        .plan-entry-empty { font-size: 12px; opacity: 0.65; }
+        .plan-asset-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .plan-asset-actions input { flex: 1; }
+        #plan-entry-add { border: none; border-radius: 8px; padding: 8px 16px; background: var(--primary-color, #1d4ed8); color: #fff; cursor: pointer; font-weight: 600; }
+        .plan-editor-status { font-size: 12px; min-height: 18px; }
+        .plan-editor-status.error { color: var(--error-color, #e53935); }
+        .plan-editor-status.success { color: var(--success-color, #4caf50); }
+        .plan-editor-footer { display: flex; justify-content: flex-end; gap: 8px; }
+        .plan-editor-cancel,
+        .plan-editor-save { border: none; border-radius: 8px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
+        .plan-editor-cancel { background: rgba(15, 23, 42, 0.08); color: var(--primary-text-color, #111); }
+        .plan-editor-save { background: var(--primary-color, #1d4ed8); color: #fff; }
+      </style>
+      <div class="plan-editor-panel" role="dialog" aria-modal="true" aria-labelledby="plan-editor-title">
+        <div class="plan-editor-header">
+          <h3 id="plan-editor-title">Investment Plan</h3>
+          <button type="button" class="plan-editor-close" aria-label="Close">✕</button>
+        </div>
+        <div class="plan-editor-body">
+          <div class="plan-editor-field">
+            <label for="plan-target-input">Target amount</label>
+            <input type="number" id="plan-target-input" step="0.01" placeholder="0.00" />
+          </div>
+          <div class="plan-editor-field">
+            <label for="plan-frequency-input">Frequency</label>
+            <select id="plan-frequency-input">
+              ${PLAN_FREQUENCIES.map((frequency) => `<option value="${frequency.value}">${frequency.label}</option>`).join("")}
+            </select>
+          </div>
+          <div class="plan-editor-field">
+            <label>Asset allocations</label>
+            <div class="plan-entry-list"></div>
+            <div class="plan-asset-actions">
+              <input list="plan-asset-options" id="plan-asset-input" placeholder="Symbol" autocomplete="off" />
+              <input type="number" id="plan-asset-amount-input" placeholder="Amount" step="0.01" min="0" />
+              <button type="button" id="plan-entry-add">Add</button>
+            </div>
+            <datalist id="plan-asset-options"></datalist>
+          </div>
+        </div>
+        <div class="plan-editor-status" aria-live="polite"></div>
+        <div class="plan-editor-footer">
+          <button type="button" class="plan-editor-cancel">Cancel</button>
+          <button type="button" class="plan-editor-save">Save plan</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(this._planEditorOverlay);
+    const closeButton = this._planEditorOverlay.querySelector(".plan-editor-close");
+    const cancelButton = this._planEditorOverlay.querySelector(".plan-editor-cancel");
+    this._planEditorSaveButton = this._planEditorOverlay.querySelector(".plan-editor-save");
+    const addButton = this._planEditorOverlay.querySelector("#plan-entry-add");
+    this._planEditorTargetInput = this._planEditorOverlay.querySelector("#plan-target-input");
+    this._planEditorFrequencyInput = this._planEditorOverlay.querySelector("#plan-frequency-input");
+    this._planEditorAssetInput = this._planEditorOverlay.querySelector("#plan-asset-input");
+    this._planEditorAssetAmountInput = this._planEditorOverlay.querySelector("#plan-asset-amount-input");
+    this._planEditorEntryList = this._planEditorOverlay.querySelector(".plan-entry-list");
+    this._planEditorStatusContainer = this._planEditorOverlay.querySelector(".plan-editor-status");
+    this._planEditorOverlay.addEventListener("click", (event) => {
+      if (event.target === this._planEditorOverlay) {
+        this._closePlanEditor();
+      }
+    });
+    this._planEditorOverlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        this._closePlanEditor();
+      }
+    });
+    closeButton?.addEventListener("click", () => this._closePlanEditor());
+    cancelButton?.addEventListener("click", () => this._closePlanEditor());
+    this._planEditorSaveButton?.addEventListener("click", () => this._savePlanFromEditor());
+    addButton?.addEventListener("click", () => this._planEditorAddEntryFromForm());
+    this._planEditorEntryList?.addEventListener("click", (event) => {
+      const remove = event.target.closest(".plan-entry-remove");
+      if (!remove) return;
+      const index = Number(remove.getAttribute("data-index"));
+      if (Number.isFinite(index)) {
+        this._planEditorRemoveEntry(index);
+      }
+    });
+    this._planEditorEntryList?.addEventListener("input", (event) => this._handlePlanEntryInput(event));
+  }
+
+  _openPlanEditor(serviceState, assetStates = []) {
+    if (!serviceState) return;
+    this._ensurePlanEditor();
+    if (!this._planEditorOverlay) return;
+    const attrs = serviceState.attributes || {};
+    this._planEditorServiceEntryId = attrs.entry_id || null;
+    this._planEditorBroker = attrs.broker_name || null;
+    const totalValue = Number(attrs.plan_total);
+    if (Number.isFinite(totalValue) && totalValue > 0) {
+      this._planEditorTargetInput.value = totalValue;
+    } else {
+      this._planEditorTargetInput.value = "";
+    }
+    const frequency = attrs.plan_frequency || PLAN_FREQUENCIES[1]?.value || "monthly";
+    this._planEditorFrequencyInput.value = frequency;
+    this._planEditorEntries = this._parsePlanPerAssetList(attrs.plan_per_asset);
+    this._planEditorPopulateAssetOptions(assetStates);
+    this._renderPlanEditorEntries();
+    this._planEditorClearStatus();
+    this._planEditorAssetInput.value = "";
+    this._planEditorAssetAmountInput.value = "";
+    this._planEditorOverlay.style.display = "flex";
+    this._planEditorOverlay.focus();
+  }
+
+  _closePlanEditor() {
+    if (!this._planEditorOverlay) return;
+    this._planEditorOverlay.style.display = "none";
+    this._planEditorEntries = [];
+    this._planEditorClearStatus();
+    this._planEditorSaving = false;
+    if (this._planEditorSaveButton) {
+      this._planEditorSaveButton.disabled = false;
+    }
+  }
+
+  _planEditorPopulateAssetOptions(assetStates) {
+    if (!this._planEditorOverlay) return;
+    const datalist = this._planEditorOverlay.querySelector("#plan-asset-options");
+    if (!datalist) return;
+    const seen = new Set();
+    const options = (Array.isArray(assetStates) ? assetStates : [])
+      .map((asset) => (asset?.attributes?.symbol || "").toString().trim().toUpperCase())
+      .filter((symbol) => symbol && !seen.has(symbol))
+      .map((symbol) => {
+        seen.add(symbol);
+        return `<option value="${this._escapeAttribute(symbol)}"></option>`;
+      })
+      .join("");
+    datalist.innerHTML = options;
+  }
+
+  _renderPlanEditorEntries() {
+    if (!this._planEditorEntryList) return;
+    if (!this._planEditorEntries?.length) {
+      this._planEditorEntryList.innerHTML = `<div class="plan-entry-empty">No asset allocations yet.</div>`;
+      return;
+    }
+    this._planEditorEntryList.innerHTML = this._planEditorEntries
+      .map((entry, index) => {
+        const symbol = entry.symbol || "";
+        const amount = Number.isFinite(entry.amount) ? entry.amount : "";
+        return `
+          <div class="plan-entry-row" data-index="${index}">
+            <input list="plan-asset-options" class="plan-entry-symbol" value="${this._escapeAttribute(symbol)}" placeholder="Symbol" />
+            <input type="number" class="plan-entry-amount" min="0" step="0.01" value="${this._escapeAttribute(String(amount))}" />
+            <button type="button" class="plan-entry-remove" data-index="${index}" aria-label="Remove ${this._escapeAttribute(symbol || "allocation")}">✕</button>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  _planEditorAddEntryFromForm() {
+    if (!this._planEditorAssetInput || !this._planEditorAssetAmountInput) return;
+    const symbolValue = (this._planEditorAssetInput.value || "").trim().toUpperCase();
+    const amountValue = Number(this._planEditorAssetAmountInput.value);
+    if (!symbolValue || !Number.isFinite(amountValue) || amountValue <= 0) {
+      this._planEditorSetStatus("Provide a symbol and a positive amount", true);
+      return;
+    }
+    this._planEditorEntries.push({ symbol: symbolValue, amount: amountValue });
+    this._planEditorAssetInput.value = "";
+    this._planEditorAssetAmountInput.value = "";
+    this._renderPlanEditorEntries();
+    this._planEditorSetStatus("Entry ready", false);
+  }
+
+  _handlePlanEntryInput(event) {
+    const target = event.target;
+    const row = target.closest(".plan-entry-row");
+    if (!row) return;
+    const index = Number(row.getAttribute("data-index"));
+    if (!Number.isFinite(index)) return;
+    if (!this._planEditorEntries[index]) return;
+    if (target.classList.contains("plan-entry-symbol")) {
+      this._planEditorEntries[index].symbol = (target.value || "").trim().toUpperCase();
+    }
+    if (target.classList.contains("plan-entry-amount")) {
+      const parsed = Number(target.value);
+      this._planEditorEntries[index].amount = Number.isFinite(parsed) ? parsed : 0;
+    }
+  }
+
+  _planEditorRemoveEntry(index) {
+    if (!Number.isFinite(index)) return;
+    this._planEditorEntries.splice(index, 1);
+    this._renderPlanEditorEntries();
+  }
+
+  _savePlanFromEditor() {
+    if (!this._planEditorSaveButton || this._planEditorSaving || !this._hass) return;
+    const payload = {};
+    const targetValue = Number(this._planEditorTargetInput?.value);
+    if (Number.isFinite(targetValue)) {
+      payload.plan_total = targetValue;
+    }
+    const frequencyValue = this._planEditorFrequencyInput?.value || PLAN_FREQUENCIES[1]?.value || "monthly";
+    payload.plan_frequency = frequencyValue;
+    const validEntries = (this._planEditorEntries || [])
+      .map((entry) => ({ symbol: (entry.symbol || "").trim().toUpperCase(), amount: Number(entry.amount) || 0 }))
+      .filter((entry) => entry.symbol && Number.isFinite(entry.amount) && entry.amount > 0);
+    payload.plan_per_asset = validEntries.map((entry) => `${entry.symbol}:${entry.amount}`);
+    if (this._planEditorServiceEntryId) {
+      payload.entry_id = this._planEditorServiceEntryId;
+    } else if (this._planEditorBroker) {
+      payload.broker = this._planEditorBroker;
+    }
+    this._planEditorSaving = true;
+    this._planEditorSaveButton.disabled = true;
+    this._planEditorSetStatus("Saving plan...");
+    this._hass
+      .callService("investment_tracker", "update_plan", payload)
+      .then(() => {
+        this._planEditorSetStatus("Plan updated", false);
+        this._closePlanEditor();
+      })
+      .catch((err) => {
+        this._planEditorSetStatus("Failed to save plan", true);
+        console.error("Investment Tracker card: plan update failed", err);
+      })
+      .finally(() => {
+        this._planEditorSaving = false;
+        if (this._planEditorSaveButton) {
+          this._planEditorSaveButton.disabled = false;
+        }
+      });
+  }
+
+  _planEditorSetStatus(message, isError = false) {
+    if (!this._planEditorStatusContainer) return;
+    this._planEditorStatusContainer.textContent = message;
+    this._planEditorStatusContainer.classList.toggle("error", Boolean(isError));
+    this._planEditorStatusContainer.classList.toggle("success", Boolean(message) && !isError);
+  }
+
+  _planEditorClearStatus() {
+    if (!this._planEditorStatusContainer) return;
+    this._planEditorStatusContainer.textContent = "";
+    this._planEditorStatusContainer.classList.remove("error", "success");
   }
 
   _getAssetPriceTrend(entityId, currentPrice) {
@@ -1847,6 +2310,25 @@ class InvestmentTrackerCard extends HTMLElement {
           handleSelection(event);
         }
       });
+    });
+  }
+
+  _bindPlanCardActions(serviceEntityId) {
+    const button = this.content?.querySelector(".plan-card-edit");
+    if (!button || !this._hass) return;
+    button.addEventListener("click", () => {
+      const entityId = (serviceEntityId || button.getAttribute("data-service") || "").trim();
+      if (!entityId) return;
+      const serviceState = this._hass.states[entityId];
+      if (!serviceState) return;
+      const brokerSlugs = Array.isArray(serviceState.attributes?.broker_slugs)
+        ? serviceState.attributes.broker_slugs
+        : [];
+      const brokerNames = Array.isArray(serviceState.attributes?.broker_names)
+        ? serviceState.attributes.broker_names
+        : [];
+      const assetStates = this._getAssets(brokerSlugs, brokerNames);
+      this._openPlanEditor(serviceState, assetStates);
     });
   }
 
