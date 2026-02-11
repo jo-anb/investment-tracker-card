@@ -1,3 +1,13 @@
+const SETTINGS_FIELDS = [
+  { key: "show_asset_refresh", label: "Toon asset refresh-knop" },
+  { key: "show_header", label: "Toon header" },
+  { key: "show_positions", label: "Toon posities" },
+  { key: "hide_unmapped", label: "Verberg niet-gemapte assets" },
+  { key: "show_refresh", label: "Toon refresh-knop" },
+  { key: "show_charts", label: "Toon charts" },
+  { key: "show_plan", label: "Toon investeringsplan" },
+];
+
 /* Investment Tracker Card (skeleton) */
 class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
@@ -15,7 +25,7 @@ class InvestmentTrackerCard extends HTMLElement {
   _dayChangeUpdated = {};
   _dayChangeRequestTokens = {};
   _dayChangeStatus = {};
-  _dayChangeDisabled = false;
+  _dayChangeStartTimes = {};
   _assetSearchTerm = "";
   _assetBrokerFilter = "";
   _assetSortKey = "value";
@@ -26,6 +36,7 @@ class InvestmentTrackerCard extends HTMLElement {
   _pendingAssetSearchFocus = null;
   _preservedAssetSearchInput = null;
   _assetFiltersOpen = false;
+  _settingsDialog = null;
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -45,9 +56,9 @@ class InvestmentTrackerCard extends HTMLElement {
     this._assetListScroll = 0; // Track the scroll position globally
   }
 
-  _loadDayChangeRest(entityId, start, requestToken) {
+  _loadDayChangeRest(entityId, startIso, requestToken) {
     if (!entityId || !this._hass?.callApi) return;
-    const path = `history/period/${encodeURIComponent(start)}?filter_entity_id=${encodeURIComponent(entityId)}&minimal_response=1`;
+    const path = `history/period/${encodeURIComponent(startIso)}?filter_entity_id=${encodeURIComponent(entityId)}&minimal_response=1`;
     this._hass
       .callApi("GET", path)
       .then((response) => {
@@ -60,7 +71,6 @@ class InvestmentTrackerCard extends HTMLElement {
         this._dayChangeStatus[entityId] = "error";
         console.warn("Investment Tracker card: day change REST fetch failed", err);
         this._render();
-        this._loadDayChangeRest(entityId, startIso, requestToken);
       });
   }
 
@@ -461,6 +471,13 @@ class InvestmentTrackerCard extends HTMLElement {
       });
     }
 
+    const settingsBtn = this.content.querySelector(".settings-btn");
+    if (settingsBtn) {
+      settingsBtn.addEventListener("click", () => {
+        this._openSettingsDialog();
+      });
+    }
+
     const portfolioSelect = this.content.querySelector("#portfolio-select");
     if (portfolioSelect) {
       portfolioSelect.addEventListener("change", (event) => {
@@ -496,6 +513,7 @@ class InvestmentTrackerCard extends HTMLElement {
     this._dayChangeStatus = {};
     this._dayChangeRequestTokens = {};
     this._pendingApexRender = null;
+    this._dayChangeStartTimes = {};
   }
 
   _refreshAsset(symbol, broker) {
@@ -1197,6 +1215,181 @@ class InvestmentTrackerCard extends HTMLElement {
     });
   }
 
+  _openSettingsDialog() {
+    this._ensureSettingsDialog();
+    if (!this._settingsDialog) return;
+    this._populateSettingsDialog();
+    this._settingsDialog.style.display = "flex";
+  }
+
+  _closeSettingsDialog() {
+    if (this._settingsDialog) {
+      this._settingsDialog.style.display = "none";
+    }
+  }
+
+  _populateSettingsDialog() {
+    if (!this._settingsDialog) return;
+    SETTINGS_FIELDS.forEach((field) => {
+      const checkbox = this._settingsDialog.querySelector(`#settings_${field.key}`);
+      if (checkbox) {
+        checkbox.checked = !!this.config[field.key];
+      }
+    });
+  }
+
+  _applySettingsChanges() {
+    if (!this._settingsDialog) return;
+    const updates = {};
+    SETTINGS_FIELDS.forEach((field) => {
+      const checkbox = this._settingsDialog.querySelector(`#settings_${field.key}`);
+      if (checkbox) {
+        updates[field.key] = checkbox.checked;
+      }
+    });
+    const newConfig = {
+      ...this.config,
+      ...updates,
+    };
+    this.config = newConfig;
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: {
+          config: {
+            ...newConfig,
+            type: newConfig.type || "custom:investment-tracker-card",
+          },
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    this._render();
+    this._closeSettingsDialog();
+  }
+
+  _ensureSettingsDialog() {
+    if (this._settingsDialog) return;
+    this._settingsDialog = document.createElement("div");
+    this._settingsDialog.className = "investment-tracker-settings-overlay";
+    this._settingsDialog.style.display = "none";
+    const rows = SETTINGS_FIELDS
+      .map(
+        (field) => `
+          <label class="settings-option">
+            <input type="checkbox" id="settings_${field.key}" />
+            <span>${field.label}</span>
+          </label>
+        `
+      )
+      .join("");
+    this._settingsDialog.innerHTML = `
+      <style>
+        .investment-tracker-settings-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.65);
+          display: none;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+        }
+        .settings-panel {
+          background: var(--ha-card-background, #fff);
+          color: var(--primary-text-color, #111);
+          width: min(360px, 90vw);
+          border-radius: 12px;
+          padding: 20px;
+          box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .settings-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .settings-close {
+          border: none;
+          background: transparent;
+          font-size: 1.1rem;
+          cursor: pointer;
+          color: var(--primary-text-color, #111);
+          padding: 2px 6px;
+          line-height: 1;
+        }
+        .settings-body {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .settings-panel h3 {
+          margin: 0;
+          font-size: 1.1rem;
+        }
+        .settings-option {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          font-size: 0.95rem;
+        }
+        .settings-option span {
+          color: var(--primary-text-color, #111);
+          font-weight: 600;
+        }
+        .settings-option input {
+          width: 18px;
+          height: 18px;
+        }
+        .settings-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 10px;
+        }
+        .settings-actions button {
+          border: none;
+          border-radius: 8px;
+          padding: 6px 14px;
+          cursor: pointer;
+          font-weight: 600;
+        }
+        .settings-actions .settings-cancel {
+          background: #e0e0e0;
+        }
+        .settings-actions .settings-save {
+          background: var(--primary-color, #0b6bff);
+          color: #fff;
+        }
+      </style>
+      <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Investment Tracker instellingen">
+        <div class="settings-header">
+          <h3>Instellingen</h3>
+          <button class="settings-close" type="button" aria-label="Sluit">✕</button>
+        </div>
+        <div class="settings-body">
+          ${rows}
+        </div>
+        <div class="settings-actions">
+          <button class="settings-cancel" type="button">Annuleren</button>
+          <button class="settings-save" type="button">Opslaan</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(this._settingsDialog);
+    this._settingsDialog.addEventListener("click", (event) => {
+      if (event.target === this._settingsDialog) {
+        this._closeSettingsDialog();
+      }
+    });
+    const closeBtn = this._settingsDialog.querySelector(".settings-close");
+    const cancelBtn = this._settingsDialog.querySelector(".settings-cancel");
+    const saveBtn = this._settingsDialog.querySelector(".settings-save");
+    closeBtn?.addEventListener("click", () => this._closeSettingsDialog());
+    cancelBtn?.addEventListener("click", () => this._closeSettingsDialog());
+    saveBtn?.addEventListener("click", () => this._applySettingsChanges());
+  }
+
   _renderPlan(serviceState, currencySymbol) {
     const attrs = serviceState?.attributes || {};
     const total = Number(attrs.plan_total ?? 0) || 0;
@@ -1545,6 +1738,15 @@ class InvestmentTrackerCard extends HTMLElement {
           background: "rgba(15, 23, 42, 0.92)",
         },
       },
+      // dataLabels: {
+      //   enabled: true,
+      //   offsetY: -4,
+      //   style: {
+      //     colors: ["var(--primary-text-color, #111)"],
+      //     fontSize: "10px",
+      //   },
+      //   formatter: (value) => `${currencySymbol}${this._formatNumberMaxDecimals(Number(value), 2)}`,
+      // },
       xaxis: {
         type: "datetime",
         min: rangeStart,
@@ -1552,15 +1754,17 @@ class InvestmentTrackerCard extends HTMLElement {
         axisBorder: { show: false },
         axisTicks: { show: false },
         labels: {
-          style: { colors: "var(--primary-text-color, #111)", fontSize: "11px" },
+          style: { colors: "var(--primary-text-color, #111)", fontSize: "10px" },
           datetimeUTC: false,
         },
       },
       yaxis: {
         labels: {
           formatter: formatValue,
-          style: { colors: "var(--primary-text-color, #111)", fontSize: "11px" },
+          style: { colors: "var(--primary-text-color, #111)", fontSize: "10px" },
         },
+        axisBorder: { show: true },
+        axisTicks: { show: true },
       },
       grid: {
         strokeDashArray: 4,
@@ -1800,6 +2004,14 @@ class InvestmentTrackerCard extends HTMLElement {
     }).format(value);
   }
 
+  _formatNumberMaxDecimals(value, maxDecimals = 2) {
+    if (!Number.isFinite(value)) return "-";
+    return new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: maxDecimals,
+    }).format(value);
+  }
+
   _getStateNumber(entityId) {
     if (!entityId) return 0;
     const state = this._hass.states[entityId];
@@ -1896,7 +2108,10 @@ class InvestmentTrackerCard extends HTMLElement {
   }
 
   _ensureDayChange(entityId) {
-    if (!entityId || !this._hass?.callWS || this._dayChangeDisabled) return;
+    if (!entityId) return;
+    const hasWs = !!this._hass?.callWS;
+    const hasRest = !!this._hass?.callApi;
+    if (!hasWs && !hasRest) return;
     this._dayChangeUpdated = this._dayChangeUpdated || {};
     this._dayChangeRequestTokens = this._dayChangeRequestTokens || {};
     const now = Date.now();
@@ -1908,35 +2123,49 @@ class InvestmentTrackerCard extends HTMLElement {
     const start = new Date();
     start.setHours(0, 0, 0, 0, 0);
     const startIso = start.toISOString();
+    this._dayChangeStartTimes[entityId] = start.getTime();
     const requestToken = `${entityId}:${startIso}:${now}`;
     this._dayChangeRequestTokens[entityId] = requestToken;
     this._dayChangeStatus = this._dayChangeStatus || {};
     this._dayChangeStatus[entityId] = "loading";
-    this._hass
-      .callWS({
-        type: "history/period",
-        start_time: startIso,
-        filter_entity_id: [entityId],
-        minimal_response: true,
-      })
-      .then((response) => {
-        if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
-        this._dayChangeStatus[entityId] = "ready";
-        this._handleDayChangeResponse(entityId, response?.[0] || []);
-      })
-      .catch((err) => {
-        if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
-        if (err?.code === "unknown_command") {
-          this._dayChangeStatus[entityId] = "unsupported";
-          this._dayChangeDisabled = true;
-          console.warn("Investment Tracker card: history/period WS command unsupported");
-          return;
-        }
-        this._dayChangeStatus[entityId] = "error";
-        // eslint-disable-next-line no-console
-        console.warn("Investment Tracker card: day change fetch failed", err);
+    const fetchRest = () => {
+      if (hasRest) {
         this._loadDayChangeRest(entityId, startIso, requestToken);
-      });
+      }
+    };
+    if (hasWs) {
+      this._hass
+        .callWS({
+          type: "history/period",
+          start_time: startIso,
+          filter_entity_id: [entityId],
+          minimal_response: true,
+        })
+        .then((response) => {
+          if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
+          this._dayChangeStatus[entityId] = "ready";
+          this._handleDayChangeResponse(entityId, response?.[0] || []);
+        })
+        .catch((err) => {
+          if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
+          if (err?.code === "unknown_command") {
+            if (hasRest) {
+              console.warn("Investment Tracker card: history/period WS command unsupported, falling back to REST");
+              fetchRest();
+              return;
+            }
+            this._dayChangeStatus[entityId] = "unsupported";
+            this._render();
+            return;
+          }
+          this._dayChangeStatus[entityId] = "error";
+          // eslint-disable-next-line no-console
+          console.warn("Investment Tracker card: day change fetch failed", err);
+          fetchRest();
+        });
+    } else {
+      fetchRest();
+    }
   }
 
   _handleDayChangeResponse(entityId, entries) {
@@ -1947,13 +2176,34 @@ class InvestmentTrackerCard extends HTMLElement {
       }))
       .filter((point) => Number.isFinite(point.value))
       .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    console.log(
+      "day change points",
+      entityId,
+      points.map((point) => ({
+        value: point.value,
+        time: new Date(point.time).toISOString(),
+      }))
+    );
     this._dayChangeCache = this._dayChangeCache || {};
     if (!points.length) {
       this._dayChangeCache[entityId] = null;
       this._render();
       return;
     }
-    const startValue = points[0].value;
+    const startTimeMs = this._dayChangeStartTimes?.[entityId];
+    let baselinePoint = points[0];
+    if (typeof startTimeMs === "number") {
+      const afterStart = points.filter((point) => new Date(point.time).getTime() >= startTimeMs);
+      if (afterStart.length) {
+        baselinePoint = afterStart[0];
+      } else {
+        const beforeStart = points.filter((point) => new Date(point.time).getTime() < startTimeMs);
+        if (beforeStart.length) {
+          baselinePoint = beforeStart[beforeStart.length - 1];
+        }
+      }
+    }
+    const startValue = baselinePoint?.value ?? points[0].value;
     const latestValue = points[points.length - 1].value;
     const change = latestValue - startValue;
     const pct = startValue ? (change / startValue) * 100 : 0;
