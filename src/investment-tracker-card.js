@@ -1,7 +1,7 @@
 /* Investment Tracker Card (skeleton) */
 class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
-  _historyRange = "1M";
+  _historyRange = "1D";
   _historyRanges = ["1D", "1W", "1M", "3M", "1Y", "ALL"];
   _selectedAssetEntityId = null;
   _selectedAssetName = null;
@@ -21,6 +21,7 @@ class InvestmentTrackerCard extends HTMLElement {
   _assetSortKey = "value";
   _assetSortDirection = "desc";
   _assetSortPopupVisible = false;
+  _assetPriceSnapshots = {};
   _assetSearchTimer = null;
   _pendingAssetSearchFocus = null;
   _preservedAssetSearchInput = null;
@@ -165,6 +166,20 @@ class InvestmentTrackerCard extends HTMLElement {
     const assetStates = this._getAssets(serviceBrokerSlugs, serviceBrokerNames);
     const assetBrokerOptions = this._getAssetBrokerOptions(assetStates);
     const displayAssets = this._applyAssetFilters(assetStates);
+    const summaryAssets = this._selectedAssetEntityId
+      ? displayAssets.filter((asset) => asset.entity_id === this._selectedAssetEntityId)
+      : displayAssets;
+    const selectedAssetState = this._selectedAssetEntityId
+      ? displayAssets.find((asset) => asset.entity_id === this._selectedAssetEntityId) || null
+      : null;
+    const selectedHasPrice = Number.isFinite(Number(selectedAssetState?.attributes?.current_price ?? NaN));
+    const selectedCurrencySymbol = selectedAssetState
+      ? this._getCurrencySymbol(selectedAssetState.attributes?.currency || "") || portfolioSymbol
+      : portfolioSymbol;
+    const selectedPriceRaw = Number(selectedAssetState?.attributes?.current_price ?? NaN);
+    const selectedPriceText = selectedHasPrice
+      ? `${selectedCurrencySymbol}${this._formatNumber(selectedPriceRaw)}`
+      : "-";
     const brokers = Array.from(new Set(displayAssets.map((asset) => asset.attributes?.broker).filter(Boolean)));
     const assetCount = displayAssets.length;
     const brokerCount = brokers.length || (brokerName ? 1 : 0);
@@ -233,7 +248,20 @@ class InvestmentTrackerCard extends HTMLElement {
     } else {
       this._destroyApexChart();
     }
-    const chartTitle = this._selectedAssetName ? `Portfolio - ${this._escapeHtml(this._selectedAssetName)}` : "Portfolio";
+    const selectedTrend = selectedAssetState
+      ? this._assetPriceSnapshots?.[this._selectedAssetEntityId]?.trend
+      : null;
+    const selectedTrendIcon = selectedTrend === "up"
+      ? `<span class="chart-title-price-move chart-title-price-move-up" aria-hidden="true">↑</span>`
+      : selectedTrend === "down"
+      ? `<span class="chart-title-price-move chart-title-price-move-down" aria-hidden="true">↓</span>`
+      : "";
+    const selectedPriceSection = selectedHasPrice
+      ? `<span class="chart-title-sub">${selectedPriceText}${selectedTrendIcon ? ` ${selectedTrendIcon}` : ""}</span>`
+      : "";
+    const chartTitle = this._selectedAssetName
+      ? `<span class="chart-title-main">Portfolio - ${this._escapeHtml(this._selectedAssetName)}</span>${selectedPriceSection}`
+      : "Portfolio";
     const charts = this.config.show_charts
       ? `
         <div class="charts">
@@ -249,9 +277,9 @@ class InvestmentTrackerCard extends HTMLElement {
       : "";
 
     const plan = this.config.show_plan ? this._renderPlan(serviceState, portfolioSymbol) : "";
-    const currency = this._renderCurrencyDistribution(displayAssets, portfolioSymbol);
-    const allocation = this._renderAssetAllocation(displayAssets);
-    const sectorAllocation = this._renderSectorAllocation(displayAssets);
+    const currency = this._renderCurrencyDistribution(summaryAssets, portfolioSymbol);
+    const allocation = this._renderAssetAllocation(summaryAssets);
+    const sectorAllocation = this._renderSectorAllocation(summaryAssets);
 
     this.content.innerHTML = `
       <style>
@@ -282,7 +310,7 @@ class InvestmentTrackerCard extends HTMLElement {
         .metric-foot-value { font-size: 12px; font-weight: 600; margin-right: 10px; }
         .muted { color: var(--disabled-text-color, #9ca3af); }
         .layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; margin-top: 16px; align-items: stretch; }
-        .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; min-height: 350px; max-height: 350px; overflow: hidden; }
+        .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; min-height: 365px; max-height: 365px; overflow: hidden; }
         .asset-list-header { display: flex; flex-direction: column; gap: 8px; }
         .asset-rows { flex: 1; overflow: auto; margin-top: 8px; display: flex; flex-direction: column; }
         .assets-header { font-weight: 600; margin-bottom: 8px; }
@@ -324,13 +352,22 @@ class InvestmentTrackerCard extends HTMLElement {
         .asset-history-button ha-icon { width: 10px; height: 10px; }
         .asset-meta { font-size: 12px; opacity: 0.6; }
         .asset-stats { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 110px; }
-        .asset-price { font-size: 13px; color: var(--secondary-text-color, #6b7280); }
+        .asset-price { font-size: 13px; color: var(--primary-text-color, #111); display:flex; align-items:center; gap:6px; }
         .asset-value { font-weight: 600; text-align: right; }
         .asset-pl { font-size: 12px; text-align: right; }
         .positive { color: var(--success-color, #4caf50); }
         .negative { color: var(--error-color, #e53935); }
+        .asset-price-move { display:inline-flex; align-items:center; justify-content:center; font-size:14px; line-height:1; font-weight:600; width:18px; }
+        .asset-price-move-up { color: var(--success-color, #4caf50); }
+        .asset-price-move-down { color: var(--error-color, #e53935); }
         .charts { grid-column: span 8; }
         .chart-card { background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; min-height: 320px; display: flex; flex-direction: column; gap: 12px; }
+        .chart-card .card-title { font-weight: 600; display: flex; flex-direction: column; gap: 6px; }
+        .chart-card .chart-title-main { font-size: 16px; }
+        .chart-card .chart-title-sub { font-size: 13px; color: var(--secondary-text-color, #6b7280); display: flex; align-items: center; gap: 6px; font-weight: 500; }
+        .chart-title-price-move { font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; width: 18px; }
+        .chart-title-price-move-up { color: var(--success-color, #4caf50); }
+        .chart-title-price-move-down { color: var(--error-color, #e53935); }
         .card-title { font-weight: 600; }
         .chart-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; opacity: 0.5; }
         .apex-chart { width: 100%; height: 240px; position: relative; }
@@ -450,6 +487,17 @@ class InvestmentTrackerCard extends HTMLElement {
     this._hass.callService("investment_tracker", "refresh", {});
   }
 
+  _resetHistoryCaches() {
+    this._historyCache = {};
+    this._historyUpdated = {};
+    this._historyStatus = {};
+    this._historyRequestTokens = {};
+    this._dayChangeCache = {};
+    this._dayChangeStatus = {};
+    this._dayChangeRequestTokens = {};
+    this._pendingApexRender = null;
+  }
+
   _refreshAsset(symbol, broker) {
     if (!this._hass || !symbol) return;
     this._hass.callService("investment_tracker", "refresh_asset", {
@@ -495,6 +543,12 @@ class InvestmentTrackerCard extends HTMLElement {
         const priceRaw = Number(attrs.current_price ?? NaN);
         const hasPrice = Number.isFinite(priceRaw);
         const priceText = hasPrice ? `${currencySymbol}${this._formatNumber(priceRaw)}` : "-";
+        const priceMovement = this._getAssetPriceTrend(stateObj.entity_id, priceRaw);
+        const priceMovementIcon = priceMovement === "up"
+          ? `<span class="asset-price-move asset-price-move-up" aria-hidden="true">↑</span>`
+          : priceMovement === "down"
+          ? `<span class="asset-price-move asset-price-move-down" aria-hidden="true">↓</span>`
+          : "";
         const plClass = plRaw >= 0 ? "positive" : "negative";
         const selected = stateObj.entity_id === this._selectedAssetEntityId;
         const rowClass = `asset-row${selected ? " selected" : ""}`;
@@ -521,7 +575,10 @@ class InvestmentTrackerCard extends HTMLElement {
               <div class="asset-meta">Qty: ${attrs.quantity ?? "-"}</div>
             </div>
             <div class="asset-stats">
-              <div class="asset-price">${priceText}</div>
+              <div class="asset-price">
+                ${priceText}
+                ${priceMovementIcon}
+              </div>
               <div class="asset-value">${currencySymbol}${value}</div>
               <div class="asset-pl ${plClass}">${pl !== "" ? `${pl}%` : ""}</div>
             </div>
@@ -1180,6 +1237,27 @@ class InvestmentTrackerCard extends HTMLElement {
         <div class="breakdown">${breakdown || "No per-asset plan provided."}</div>
       </div>
     `;
+  }
+
+  _getAssetPriceTrend(entityId, currentPrice) {
+    if (!entityId) return null;
+    if (!this._assetPriceSnapshots) {
+      this._assetPriceSnapshots = {};
+    }
+    const previousEntry = this._assetPriceSnapshots[entityId];
+    const previousPrice = Number(previousEntry?.price ?? NaN);
+    let trend = previousEntry?.trend || null;
+    if (Number.isFinite(currentPrice) && Number.isFinite(previousPrice)) {
+      if (currentPrice > previousPrice) {
+        trend = "up";
+      } else if (currentPrice < previousPrice) {
+        trend = "down";
+      }
+    }
+    if (Number.isFinite(currentPrice)) {
+      this._assetPriceSnapshots[entityId] = { price: currentPrice, trend };
+    }
+    return trend;
   }
 
   _getAssets(brokerSlugs = [], brokerNames = []) {
@@ -2085,7 +2163,9 @@ class InvestmentTrackerCard extends HTMLElement {
   }
 }
 
-customElements.define("investment-tracker-card", InvestmentTrackerCard);
+if (!customElements.get("investment-tracker-card")) {
+  customElements.define("investment-tracker-card", InvestmentTrackerCard);
+}
 
 window.customCards = window.customCards || [];
 window.customCards.push({
