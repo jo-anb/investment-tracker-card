@@ -80,6 +80,8 @@ class InvestmentTrackerCard extends HTMLElement {
     const serviceState = serviceEntity ? this._hass.states[serviceEntity] : null;
     const brokerName = (serviceState?.attributes?.broker_name || this.config.broker || "").toString();
     const brokerSlug = this._slugify(brokerName || "investment");
+    const serviceBrokerNames = this._getServiceBrokerNames(serviceState, brokerName);
+    const serviceBrokerSlugs = serviceBrokerNames.map((name) => this._slugify(name || "investment"));
 
     const totalValueEntityId = this._findTotalEntityId(brokerSlug, "total_value");
     const totalInvestedEntityId = this._findTotalEntityId(brokerSlug, "total_invested");
@@ -147,7 +149,7 @@ class InvestmentTrackerCard extends HTMLElement {
       `
       : "";
 
-    const assets = this._getAssets(brokerSlug, brokerName);
+    const assets = this._getAssets(serviceBrokerSlugs, serviceBrokerNames);
     const brokers = Array.from(new Set(assets.map((asset) => asset.attributes?.broker).filter(Boolean)));
     const assetCount = assets.length;
     const brokerCount = brokers.length || (brokerName ? 1 : 0);
@@ -401,6 +403,8 @@ class InvestmentTrackerCard extends HTMLElement {
 
   _refresh() {
     if (!this._hass) return;
+    this._resetHistoryCaches();
+    this._render();
     this._hass.callService("investment_tracker", "refresh", {});
   }
 
@@ -844,15 +848,29 @@ class InvestmentTrackerCard extends HTMLElement {
     `;
   }
 
-  _getAssets(brokerSlug, brokerName) {
+  _getAssets(brokerSlugs = [], brokerNames = []) {
     const states = this._hass.states;
+    const normalizedSlugs = (Array.isArray(brokerSlugs) ? brokerSlugs : [])
+      .map((slug) => (slug || "").toString().toLowerCase())
+      .filter(Boolean);
+    const normalizedBrokers = (Array.isArray(brokerNames) ? brokerNames : [])
+      .map((name) => (name || "").toString().toLowerCase())
+      .filter(Boolean);
     // Verzamel alle relevante assets
     let assets = Object.values(states).filter((stateObj) => {
       if (!stateObj || !stateObj.entity_id?.startsWith("sensor.")) return false;
       const attrs = stateObj.attributes || {};
       if (!attrs.symbol || !Object.prototype.hasOwnProperty.call(attrs, "market_value")) return false;
-      if (brokerSlug && stateObj.entity_id.startsWith(`sensor.${brokerSlug}_`)) return true;
-      if (brokerName && String(attrs.broker || "").toLowerCase() === String(brokerName).toLowerCase()) return true;
+      const entityId = stateObj.entity_id || "";
+      if (normalizedSlugs.length && normalizedSlugs.some((slug) => entityId.startsWith(`sensor.${slug}_`))) {
+        return true;
+      }
+      if (
+        normalizedBrokers.length &&
+        normalizedBrokers.includes(String(attrs.broker || "").toLowerCase())
+      ) {
+        return true;
+      }
       return false;
     });
     // Dedupliceer op symbol+broker (of entity_id als fallback)
@@ -947,6 +965,30 @@ class InvestmentTrackerCard extends HTMLElement {
     }
     // 6. Fallback: eerste entity met 'investment_tracker_'
     return Object.keys(this._hass.states).find((entityId) => entityId.includes("investment_tracker_")) || null;
+  }
+
+  _getServiceBrokerNames(serviceState, fallbackBroker) {
+    const attrs = serviceState?.attributes || {};
+    const names = [];
+    const seen = new Set();
+    const append = (value) => {
+      const normalized = (value || "").toString().trim();
+      if (!normalized) {
+        return;
+      }
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      names.push(normalized);
+    };
+    append(attrs.broker_name || fallbackBroker || "");
+    const additional = attrs.broker_names;
+    if (Array.isArray(additional)) {
+      additional.forEach((value) => append(value));
+    }
+    return names;
   }
 
   _renderPortfolioSelect(serviceEntities, selected) {
