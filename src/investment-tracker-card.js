@@ -16,6 +16,15 @@ class InvestmentTrackerCard extends HTMLElement {
   _dayChangeRequestTokens = {};
   _dayChangeStatus = {};
   _dayChangeDisabled = false;
+  _assetSearchTerm = "";
+  _assetBrokerFilter = "";
+  _assetSortKey = "value";
+  _assetSortDirection = "desc";
+  _assetSortPopupVisible = false;
+  _assetSearchTimer = null;
+  _pendingAssetSearchFocus = null;
+  _preservedAssetSearchInput = null;
+  _assetFiltersOpen = false;
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -70,7 +79,11 @@ class InvestmentTrackerCard extends HTMLElement {
   _render() {
     if (!this._hass) return;
 
-    const previousAssetList = this.content?.querySelector(".asset-list");
+    if (this.content) {
+      this._captureAssetSearchFocus();
+    }
+
+    const previousAssetList = this.content?.querySelector(".asset-rows");
     if (previousAssetList) {
       this._assetListScroll = previousAssetList.scrollTop;
     }
@@ -149,9 +162,11 @@ class InvestmentTrackerCard extends HTMLElement {
       `
       : "";
 
-    const assets = this._getAssets(serviceBrokerSlugs, serviceBrokerNames);
-    const brokers = Array.from(new Set(assets.map((asset) => asset.attributes?.broker).filter(Boolean)));
-    const assetCount = assets.length;
+    const assetStates = this._getAssets(serviceBrokerSlugs, serviceBrokerNames);
+    const assetBrokerOptions = this._getAssetBrokerOptions(assetStates);
+    const displayAssets = this._applyAssetFilters(assetStates);
+    const brokers = Array.from(new Set(displayAssets.map((asset) => asset.attributes?.broker).filter(Boolean)));
+    const assetCount = displayAssets.length;
     const brokerCount = brokers.length || (brokerName ? 1 : 0);
     const portfolioName = serviceState?.attributes?.friendly_name || serviceState?.attributes?.name || serviceState?.state || brokerName || this.config.title;
 
@@ -209,7 +224,7 @@ class InvestmentTrackerCard extends HTMLElement {
       `
       : "";
 
-    const positions = this.config.show_positions ? this._renderPositions(assets, portfolioSymbol, brokerName) : "";
+    const positions = this.config.show_positions ? this._renderPositions(displayAssets, portfolioSymbol, brokerName, assetBrokerOptions) : "";
     const chartsEnabled = this.config.show_charts && totalValueEntityId;
     this._portfolioEntityId = totalValueEntityId;
     const activeChartEntity = chartsEnabled ? (this._selectedAssetEntityId || totalValueEntityId) : null;
@@ -234,9 +249,9 @@ class InvestmentTrackerCard extends HTMLElement {
       : "";
 
     const plan = this.config.show_plan ? this._renderPlan(serviceState, portfolioSymbol) : "";
-    const currency = this._renderCurrencyDistribution(assets, portfolioSymbol);
-    const allocation = this._renderAssetAllocation(assets);
-    const sectorAllocation = this._renderSectorAllocation(assets);
+    const currency = this._renderCurrencyDistribution(displayAssets, portfolioSymbol);
+    const allocation = this._renderAssetAllocation(displayAssets);
+    const sectorAllocation = this._renderSectorAllocation(displayAssets);
 
     this.content.innerHTML = `
       <style>
@@ -266,12 +281,36 @@ class InvestmentTrackerCard extends HTMLElement {
         .metric-foot-label { font-size: 11px; opacity: 0.7; margin-right: 2px; }
         .metric-foot-value { font-size: 12px; font-weight: 600; margin-right: 10px; }
         .muted { color: var(--disabled-text-color, #9ca3af); }
-        .layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
-        .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; max-height: 320px; overflow: auto; }
+        .layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; margin-top: 16px; align-items: stretch; }
+        .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; min-height: 350px; max-height: 350px; overflow: hidden; }
+        .asset-list-header { display: flex; flex-direction: column; gap: 8px; }
+        .asset-rows { flex: 1; overflow: auto; margin-top: 8px; display: flex; flex-direction: column; }
         .assets-header { font-weight: 600; margin-bottom: 8px; }
         .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); cursor: pointer; transition: background 0.2s ease; gap: 12px; }
         .asset-row:last-child { border-bottom: 0; }
         .asset-row.selected { background: color-mix(in srgb, var(--primary-color, #1976d2) 90%, #fff); }
+        .asset-filters { color: #0f172a; border-radius: 12px; background: var(--card-background-color, #fff); border: 1px solid rgba(15, 23, 42, 0.08); padding: 10px 14px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08); display: flex; flex-direction: column; gap: 8px; }
+        .asset-filter-group { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+        .asset-filter { display: flex; flex-direction: column; gap: 4px; min-width: 180px; flex: 1; }
+        .asset-filter span { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; opacity: 0.85; color: #fff; font-weight: 600; }
+        .asset-filter input, .asset-filter select { border-radius: 8px; border: 1px solid rgba(15, 23, 42, 0.25); padding: 8px 10px; background: rgba(255,255,255,0.98); font-size: 14px; color: #0f172a; font-weight: 600; }
+        .asset-filters-header { display: flex; justify-content: flex-end; }
+        .asset-filter-toggle { border: 0; background: rgba(15, 23, 42, 0.08); color: #fff; border-radius: 24px; padding: 4px 12px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; transition: background 0.2s ease; }
+        .asset-filter-toggle ha-icon { color: #fff; }
+        .asset-filter-toggle:hover { background: rgba(15, 23, 42, 0.15); }
+        .asset-filter-body { display: flex; flex-direction: column; gap: 6px; }
+        .asset-filter-body.collapsed { display: none; }
+        .asset-filter input::placeholder { color: rgba(15, 23, 42, 0.35); }
+        .asset-sort-control { position: relative; display: flex; align-items: center; gap: 6px; }
+        #asset-sort-button { border: 1px solid rgba(15, 23, 42, 0.2); background: #0f172a; color: #fff; border-radius: 10px; padding: 6px 14px; display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+        #asset-sort-button .asset-sort-icon { font-size: 14px; }
+        #asset-sort-button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+        .asset-sort-popup { position: absolute; top: 42px; right: 0; background: #fff; border-radius: 10px; border: 1px solid rgba(15, 23, 42, 0.2); box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15); padding: 6px; min-width: 160px; display: none; flex-direction: column; gap: 4px; z-index: 10; }
+        .asset-sort-popup.open { display: flex; }
+        .asset-sort-option { border: none; background: transparent; padding: 6px 10px; border-radius: 6px; text-align: left; font-size: 13px; color: #0b1221; cursor: pointer; }
+        .asset-sort-option:hover, .asset-sort-option[data-selected="true"] { background: rgba(59, 130, 246, 0.15); }
+        #asset-sort-direction { border: none; background: rgba(15, 23, 42, 0.08); border-radius: 50%; width: 34px; height: 34px; font-size: 18px; color: var(--primary-text-color, #111); cursor: pointer; }
+        .asset-empty { padding: 16px 8px; font-size: 13px; opacity: 0.7; }
         .asset-info { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
         .asset-name-row { display: flex; align-items: flex-start; gap: 8px; }
         .asset-name { font-weight: 600; }
@@ -350,12 +389,14 @@ class InvestmentTrackerCard extends HTMLElement {
       </div>
       ${plan}
     `;
+
+    this._restorePreservedAssetSearchInput();
     if (activeChartEntity) {
       this._scheduleApexChartRender(activeChartEntity, portfolioSymbol);
     }
     this._bindChartRangeButtons(activeChartEntity);
 
-    const newAssetList = this.content.querySelector(".asset-list");
+    const newAssetList = this.content.querySelector(".asset-rows");
     if (newAssetList) {
       newAssetList.scrollTop = this._assetListScroll;
       newAssetList.addEventListener("scroll", () => {
@@ -364,6 +405,7 @@ class InvestmentTrackerCard extends HTMLElement {
     }
 
     this._bindAssetSelection();
+    this._bindAssetFilterControls();
 
     const refreshEl = this.content.querySelector("#refresh");
     if (refreshEl) {
@@ -416,12 +458,24 @@ class InvestmentTrackerCard extends HTMLElement {
     });
   }
 
-  _renderPositions(assets, portfolioSymbol, brokerName) {
+  _renderPositions(assets, portfolioSymbol, brokerName, brokerOptions = []) {
+    const header = `<div class="assets-header">Assets</div>`;
+    const filters = this._renderAssetFilters(brokerOptions);
     if (!assets.length) {
-      return `<div class="asset-list"><div class="assets-header">Assets</div>No positions available.</div>`;
+      return `
+        <div class="asset-list">
+          <div class="asset-list-header">
+            ${header}
+            ${filters}
+          </div>
+          <div class="asset-rows">
+            <div class="asset-empty">No positions available.</div>
+          </div>
+        </div>
+      `;
     }
 
-    const rows = assets
+      const rows = assets
       .map((stateObj) => {
         const attrs = stateObj.attributes || {};
         if (this.config.hide_unmapped && attrs.unmapped) return "";
@@ -431,7 +485,7 @@ class InvestmentTrackerCard extends HTMLElement {
         const assetCategory = (attrs.category || attrs.type || "equity").toString().toLowerCase();
         const name = this._normalizeAssetName(
           attrs.friendly_name || attrs.symbol || stateObj.entity_id,
-          brokerName
+          [brokerName, attrs.broker]
         );
         const valueRaw = Number(attrs.market_value ?? stateObj.state) || 0;
         const plRaw = Number(attrs.profit_loss_pct ?? 0);
@@ -547,7 +601,287 @@ class InvestmentTrackerCard extends HTMLElement {
         });
     }, 0);
 
-    return `<div class="asset-list"><div class="assets-header">Assets</div>${rows}</div>`;
+    return `
+      <div class="asset-list">
+        <div class="asset-list-header">
+          ${header}
+          ${filters}
+        </div>
+        <div class="asset-rows">
+          ${rows}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderAssetFilters(brokerOptions = []) {
+    const searchValue = this._escapeAttribute(this._assetSearchTerm);
+    const brokerSelect = (Array.isArray(brokerOptions) ? brokerOptions : [])
+      .map((broker) => {
+        const selected = this._assetBrokerFilter === broker.value ? " selected" : "";
+        return `
+        <option value="${this._escapeAttribute(broker.value)}"${selected}>
+          ${this._escapeAttribute(broker.label)}
+        </option>
+      `;
+      })
+      .join("");
+    const filtersVisible = Boolean(this._assetFiltersOpen);
+    const sortLabel = this._formatSortLabel(this._assetSortKey);
+    const directionSymbol = this._assetSortDirection === "asc" ? "↑" : "↓";
+    const sortButtons = ["name", "symbol", "pl_pct", "value"]
+      .map((key) => `
+        <button type="button" class="asset-sort-option" data-key="${key}" data-selected="${this._assetSortKey === key}">
+          ${this._formatSortLabel(key)}
+        </button>
+      `)
+      .join("");
+    const popupClass = `asset-sort-popup${this._assetSortPopupVisible ? " open" : ""}`;
+    const bodyClass = filtersVisible ? "asset-filter-body open" : "asset-filter-body collapsed";
+    const bodyAttributes = filtersVisible ? "" : "aria-hidden=\"true\"";
+    const toggleIcon = filtersVisible ? "mdi:chevron-double-up" : "mdi:chevron-double-down";
+    const toggleLabel = filtersVisible ? "Hide filters" : "Show filters";
+    return `
+      <div class="asset-filters" aria-label="Asset filters">
+        <div class="asset-filters-header">
+          <button type="button" class="asset-filter-toggle" aria-expanded="${filtersVisible}">
+            <ha-icon icon="${toggleIcon}"></ha-icon>
+            <span>${toggleLabel}</span>
+          </button>
+        </div>
+        <div class="${bodyClass}" ${bodyAttributes}>
+          <div class="asset-filter-group">
+            <label class="asset-filter">
+              <span>Search assets</span>
+              <input type="search" id="asset-search" placeholder="Symbol, ticker, or name" value="${searchValue}" autocomplete="off" />
+            </label>
+            <label class="asset-filter">
+              <span>Broker</span>
+              <select id="asset-broker-filter">
+                <option value=""${!this._assetBrokerFilter ? " selected" : ""}>All brokers</option>
+                ${brokerSelect}
+              </select>
+            </label>
+            <div class="asset-sort-control">
+              <button type="button" id="asset-sort-button" aria-haspopup="true" aria-expanded="${this._assetSortPopupVisible ? "true" : "false"}">
+                <span class="asset-sort-icon">⇅</span>
+                <span>Sort: ${this._escapeAttribute(sortLabel)}</span>
+              </button>
+              <div class="${popupClass}">
+                ${sortButtons}
+              </div>
+              <button type="button" id="asset-sort-direction" aria-label="Toggle sort direction">${directionSymbol}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _getAssetBrokerOptions(states) {
+    const seen = new Set();
+    const options = [];
+    (states || []).forEach((stateObj) => {
+      const broker = (stateObj?.attributes?.broker || "").toString().trim();
+      if (!broker) return;
+      const key = broker.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({ value: broker, label: this._prettifyBrokerLabel(broker) });
+    });
+    return options;
+  }
+
+  _applyAssetFilters(states) {
+    const search = (this._assetSearchTerm || "").trim().toLowerCase();
+    const brokerFilter = (this._assetBrokerFilter || "").trim().toLowerCase();
+    const filtered = (Array.isArray(states) ? states : []).filter((stateObj) => {
+      const attrs = stateObj?.attributes || {};
+      if (brokerFilter && (attrs.broker || "").toLowerCase() !== brokerFilter) {
+        return false;
+      }
+      if (!search) {
+        return true;
+      }
+      const suggestions = Array.isArray(attrs.repair_suggestions)
+        ? attrs.repair_suggestions
+            .map((item) => (item?.symbol || item?.ticker || item?.name || "").toString())
+        : [];
+      const haystack = [
+        attrs.symbol,
+        attrs.name,
+        attrs.display_name,
+        attrs.ticker,
+        attrs.broker,
+        stateObj?.entity_id,
+        ...suggestions,
+      ]
+        .filter(Boolean)
+        .map((value) => value.toString().toLowerCase())
+        .join(" ");
+      return haystack.includes(search);
+    });
+    return this._sortAssets(filtered);
+  }
+
+  _sortAssets(states) {
+    const key = this._assetSortKey || "value";
+    const direction = this._assetSortDirection === "asc" ? 1 : -1;
+    return [...(Array.isArray(states) ? states : [])].sort((a, b) => {
+      const aVal = this._assetSortValue(a, key);
+      const bVal = this._assetSortValue(b, key);
+      if (typeof aVal === "number" && typeof bVal === "number") {
+        if (aVal === bVal) return 0;
+        return (aVal - bVal) * direction;
+      }
+      const aText = (aVal || "").toString();
+      const bText = (bVal || "").toString();
+      return aText.localeCompare(bText, undefined, { sensitivity: "base" }) * direction;
+    });
+  }
+
+  _assetSortValue(stateObj, key) {
+    const attrs = stateObj?.attributes || {};
+    if (key === "value") {
+      return Number(attrs.market_value ?? stateObj?.state) || 0;
+    }
+    if (key === "pl_pct") {
+      return Number(attrs.profit_loss_pct ?? 0) || 0;
+    }
+    if (key === "symbol") {
+      return (attrs.symbol || "").toString().toLowerCase();
+    }
+    return (attrs.display_name || attrs.name || attrs.symbol || "").toString().toLowerCase();
+  }
+
+  _formatSortLabel(key) {
+    switch (key) {
+      case "name":
+        return "Name";
+      case "symbol":
+        return "Symbol";
+      case "pl_pct":
+        return "P/L %";
+      case "value":
+      default:
+        return "Value";
+    }
+  }
+
+  _bindAssetFilterControls() {
+    if (!this.content) return;
+    const searchInput = this.content.querySelector("#asset-search");
+    if (searchInput) {
+      searchInput.value = this._assetSearchTerm;
+      this._restoreAssetSearchFocus(searchInput);
+      searchInput.oninput = (event) => {
+        this._assetSearchTerm = (event.target?.value || "").toString();
+        this._scheduleSearchRender();
+      };
+    }
+    const filterToggle = this.content.querySelector(".asset-filter-toggle");
+    if (filterToggle) {
+      filterToggle.onclick = () => {
+        this._assetFiltersOpen = !this._assetFiltersOpen;
+        this._render();
+      };
+    }
+    const brokerSelect = this.content.querySelector("#asset-broker-filter");
+    if (brokerSelect) {
+      brokerSelect.value = this._assetBrokerFilter;
+      brokerSelect.onchange = (event) => {
+        this._assetBrokerFilter = (event.target?.value || "").toString();
+        this._render();
+      };
+    }
+    const sortButton = this.content.querySelector("#asset-sort-button");
+    if (sortButton) {
+      sortButton.onclick = (event) => {
+        event.stopPropagation();
+        this._assetSortPopupVisible = !this._assetSortPopupVisible;
+        this._render();
+      };
+    }
+    const sortOptions = this.content.querySelectorAll(".asset-sort-option");
+    sortOptions.forEach((option) => {
+      option.onclick = () => {
+        const key = option.dataset.key;
+        if (!key) return;
+        this._assetSortKey = key;
+        this._assetSortPopupVisible = false;
+        this._render();
+      };
+    });
+    const directionBtn = this.content.querySelector("#asset-sort-direction");
+    if (directionBtn) {
+      directionBtn.onclick = () => {
+        this._assetSortDirection = this._assetSortDirection === "asc" ? "desc" : "asc";
+        this._render();
+      };
+    }
+  }
+
+  _scheduleSearchRender() {
+    if (this._assetSearchTimer) {
+      clearTimeout(this._assetSearchTimer);
+    }
+    this._assetSearchTimer = setTimeout(() => {
+      this._assetSearchTimer = null;
+      this._render();
+    }, 280);
+  }
+
+  _captureAssetSearchFocus() {
+    if (!this.content) {
+      this._pendingAssetSearchFocus = null;
+      this._preservedAssetSearchInput = null;
+      return;
+    }
+    if (!this._assetFiltersOpen) {
+      this._pendingAssetSearchFocus = null;
+      this._preservedAssetSearchInput = null;
+      return;
+    }
+    const searchInput = this.content.querySelector("#asset-search");
+    if (searchInput && searchInput === document.activeElement) {
+      this._pendingAssetSearchFocus = {
+        start: typeof searchInput.selectionStart === "number" ? searchInput.selectionStart : null,
+        end: typeof searchInput.selectionEnd === "number" ? searchInput.selectionEnd : null,
+      };
+      this._preservedAssetSearchInput = searchInput;
+    } else {
+      this._pendingAssetSearchFocus = null;
+      this._preservedAssetSearchInput = null;
+    }
+  }
+
+  _restoreAssetSearchFocus(input) {
+    if (!input || !this._pendingAssetSearchFocus) return;
+    input.focus({ preventScroll: true });
+    const { start, end } = this._pendingAssetSearchFocus;
+    if (typeof start === "number" && typeof end === "number") {
+      input.setSelectionRange(start, end);
+    }
+    this._pendingAssetSearchFocus = null;
+  }
+
+  _restorePreservedAssetSearchInput() {
+    if (!this._preservedAssetSearchInput || !this.content) return;
+    const currentInput = this.content.querySelector("#asset-search");
+    if (!currentInput || !currentInput.parentNode) {
+      this._preservedAssetSearchInput = null;
+      return;
+    }
+    currentInput.parentNode.replaceChild(this._preservedAssetSearchInput, currentInput);
+    this._preservedAssetSearchInput = null;
+  }
+
+  _prettifyBrokerLabel(value) {
+    if (!value) return "";
+    return value
+      .split(/[_\s]+/)
+      .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1).toLowerCase())
+      .join(" ");
   }
 
   _showRemapDialog(symbol, broker, category, entityId) {
@@ -885,15 +1219,29 @@ class InvestmentTrackerCard extends HTMLElement {
     return assets;
   }
 
-  _normalizeAssetName(value, brokerName) {
+  _normalizeAssetName(value, brokerCandidates = []) {
     const raw = String(value || "");
     if (!raw) return raw;
-    const broker = (brokerName || "").toString().trim();
     let name = raw;
-    if (broker) {
-      const brokerLower = broker.toLowerCase();
-      if (name.toLowerCase().startsWith(`${brokerLower} `)) {
-        name = name.slice(broker.length).trim();
+    const candidates = (Array.isArray(brokerCandidates) ? brokerCandidates : [brokerCandidates])
+      .map((candidate) => (candidate || "").toString().trim())
+      .filter(Boolean);
+    const normalizedCandidates = Array.from(
+      new Set(
+        candidates.flatMap((candidate) => {
+          const variants = [candidate];
+          const spaced = candidate.replace(/_/g, " ").trim();
+          if (spaced && spaced !== candidate) {
+            variants.push(spaced);
+          }
+          return variants;
+        })
+      )
+    );
+    for (const candidate of normalizedCandidates) {
+      const prefix = `${candidate} `;
+      if (candidate && name.toLowerCase().startsWith(prefix.toLowerCase())) {
+        name = name.slice(prefix.length).trim();
       }
     }
     if (name.toLowerCase().endsWith(" value")) {
