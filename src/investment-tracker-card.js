@@ -15,6 +15,7 @@ class InvestmentTrackerCard extends HTMLElement {
   _dayChangeUpdated = {};
   _dayChangeRequestTokens = {};
   _dayChangeStatus = {};
+  _dayChangeDisabled = false;
   setConfig(config) {
     this.config = {
       title: "Investment Tracker",
@@ -32,6 +33,25 @@ class InvestmentTrackerCard extends HTMLElement {
       ...config,
     };
     this._assetListScroll = 0; // Track the scroll position globally
+  }
+
+  _loadDayChangeRest(entityId, start, requestToken) {
+    if (!entityId || !this._hass?.callApi) return;
+    const path = `history/period/${encodeURIComponent(start)}?filter_entity_id=${encodeURIComponent(entityId)}&minimal_response=1`;
+    this._hass
+      .callApi("GET", path)
+      .then((response) => {
+        if (this._dayChangeRequestTokens?.[entityId] !== requestToken) return;
+        this._dayChangeStatus[entityId] = "ready";
+        this._handleDayChangeResponse(entityId, response?.[0] || []);
+      })
+      .catch((err) => {
+        if (this._dayChangeRequestTokens?.[entityId] !== requestToken) return;
+        this._dayChangeStatus[entityId] = "error";
+        console.warn("Investment Tracker card: day change REST fetch failed", err);
+        this._render();
+        this._loadDayChangeRest(entityId, startIso, requestToken);
+      });
   }
 
   set hass(hass) {
@@ -65,6 +85,9 @@ class InvestmentTrackerCard extends HTMLElement {
     const totalInvestedEntityId = this._findTotalEntityId(brokerSlug, "total_invested");
     const totalPLEntityId = this._findTotalEntityId(brokerSlug, "total_profit_loss");
     const totalPLPctEntityId = this._findTotalEntityId(brokerSlug, "total_profit_loss_pct");
+    const totalActiveInvestedEntityId = this._findTotalEntityId(brokerSlug, "total_active_invested");
+    const totalPLRealizedEntityId = this._findTotalEntityId(brokerSlug, "total_realized_profit_loss");
+    const totalPLUnrealizedEntityId = this._findTotalEntityId(brokerSlug, "total_unrealized_profit_loss");
 
     const portfolioCurrency = this._getUnit(totalValueEntityId);
     const portfolioSymbol = this._getCurrencySymbol(portfolioCurrency);
@@ -73,26 +96,43 @@ class InvestmentTrackerCard extends HTMLElement {
     const dayChangeValue = dayChangeInfo?.value;
     const dayChangePct = dayChangeInfo?.pct;
     const hasDayChange = Number.isFinite(dayChangeValue);
-    const dayChangeClass = hasDayChange
-      ? dayChangeValue > 0
-        ? "positive"
-        : dayChangeValue < 0
-        ? "negative"
-        : "muted"
+    const displayedDayChangeValue = hasDayChange ? dayChangeValue : 0;
+    const displayedDayChangePct = Number.isFinite(dayChangePct) ? dayChangePct : 0;
+    const dayChangeClass = displayedDayChangeValue > 0
+      ? "positive"
+      : displayedDayChangeValue < 0
+      ? "negative"
       : "muted";
-    const dayChangeDisplay = hasDayChange
-      ? `${dayChangeValue > 0 ? "+" : dayChangeValue < 0 ? "-" : ""}${portfolioSymbol}${this._formatNumber(
-          Math.abs(dayChangeValue)
-        )}`
-      : "-";
-    const dayChangePctDisplay = hasDayChange && Number.isFinite(dayChangePct)
-      ? `${dayChangePct >= 0 ? "+" : "-"}${this._formatNumber(Math.abs(dayChangePct))}%`
-      : null;
-    const dayChangeFoot = dayChangePctDisplay ? `<div class="metric-foot">${dayChangePctDisplay} today</div>` : "";
-    const totalValue = this._formatNumber(this._getStateNumber(totalValueEntityId));
-    const totalInvested = this._formatNumber(this._getStateNumber(totalInvestedEntityId));
-    const totalPL = this._formatNumber(this._getStateNumber(totalPLEntityId));
-    const totalPLPct = this._formatNumber(this._getStateNumber(totalPLPctEntityId));
+    const dayChangeDisplay = `${displayedDayChangeValue > 0 ? "+" : displayedDayChangeValue < 0 ? "-" : ""}${portfolioSymbol}${this._formatNumber(
+      Math.abs(displayedDayChangeValue)
+    )}`;
+    const dayChangePctDisplay = `${displayedDayChangePct >= 0 ? "+" : "-"}${this._formatNumber(Math.abs(displayedDayChangePct))}%`;
+    const dayChangeFoot = `<div class="metric-foot">${dayChangePctDisplay} today</div>`;
+    const totalValueNumber = this._getStateNumber(totalValueEntityId);
+    const totalInvestedNumber = this._getStateNumber(totalInvestedEntityId);
+    const totalPLNumber = this._getStateNumber(totalPLEntityId);
+    const totalPLPctNumberSensor = this._getStateNumber(totalPLPctEntityId);
+    let totalPLPctComputed = NaN;
+    if (totalInvestedNumber) {
+      totalPLPctComputed = (totalPLNumber / totalInvestedNumber) * 100;
+    } else if (Number.isFinite(totalPLPctNumberSensor)) {
+      totalPLPctComputed = totalPLPctNumberSensor;
+    }
+    const totalValue = this._formatNumber(totalValueNumber);
+    const totalInvested = this._formatNumber(totalInvestedNumber);
+    const totalPL = this._formatNumber(totalPLNumber);
+    const totalPLPct = this._formatNumber(totalPLPctComputed);
+    const totalActiveInvestedValue = this._getStateNumber(totalActiveInvestedEntityId);
+    const totalActiveInvested = this._formatNumber(totalActiveInvestedValue);
+    const totalPLRealizedValue = this._getStateNumber(totalPLRealizedEntityId);
+    const totalPLUnrealizedValue = this._getStateNumber(totalPLUnrealizedEntityId);
+    const totalPLRealized = this._formatNumber(totalPLRealizedValue);
+    const totalPLUnrealized = this._formatNumber(totalPLUnrealizedValue);
+    const totalActiveInvestedFoot = totalActiveInvestedEntityId
+      ? `<div class="metric-foot">Active Invested: ${portfolioSymbol}${totalActiveInvested}</div>`
+      : "";
+    const realizedClass = totalPLRealizedValue > 0 ? "positive" : totalPLRealizedValue < 0 ? "negative" : "muted";
+    const unrealizedClass = totalPLUnrealizedValue > 0 ? "positive" : totalPLUnrealizedValue < 0 ? "negative" : "muted";
 
     const refreshButton = this.config.show_refresh
       ? `<div class="actions"><button class="refresh-btn" id="refresh">Refresh</button></div>`
@@ -154,6 +194,13 @@ class InvestmentTrackerCard extends HTMLElement {
               <div class="metric-title">Total Return</div>
               <div class="metric-value">${portfolioSymbol}${totalPL} <span class="metric-sub">(${totalPLPct}%)</span></div>
               <div class="metric-foot">Invested: ${portfolioSymbol}${totalInvested}</div>
+              ${totalActiveInvestedFoot}
+              <div class="metric-foot metric-foot-split">
+                <span class="metric-foot-label">Realized:</span>
+                <span class="metric-foot-value ${realizedClass}">${portfolioSymbol}${totalPLRealized}</span>
+                <span class="metric-foot-label">Unrealized:</span>
+                <span class="metric-foot-value ${unrealizedClass}">${portfolioSymbol}${totalPLUnrealized}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -213,6 +260,10 @@ class InvestmentTrackerCard extends HTMLElement {
         .metric-value { font-size: 18px; font-weight: 600; }
         .metric-sub { font-size: 12px; opacity: 0.7; }
         .metric-foot { font-size: 12px; opacity: 0.6; margin-top: 6px; }
+        .metric-foot-split { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+        .metric-foot-label { font-size: 11px; opacity: 0.7; margin-right: 2px; }
+        .metric-foot-value { font-size: 12px; font-weight: 600; margin-right: 10px; }
+        .muted { color: var(--disabled-text-color, #9ca3af); }
         .layout { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
         .asset-list { grid-column: span 4; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; max-height: 320px; overflow: auto; }
         .assets-header { font-weight: 600; margin-bottom: 8px; }
@@ -1255,7 +1306,15 @@ class InvestmentTrackerCard extends HTMLElement {
         entityId.includes(brokerSlug) &&
         entityId.endsWith(key)
     );
-    return candidates[0] || null;
+    if (candidates.length) {
+      return candidates[0];
+    }
+    const fallback = Object.keys(this._hass.states).find(
+      (entityId) =>
+        entityId.startsWith("sensor.") &&
+        entityId.endsWith(key)
+    );
+    return fallback || null;
   }
 
   _slugify(value) {
@@ -1369,7 +1428,7 @@ class InvestmentTrackerCard extends HTMLElement {
   }
 
   _ensureDayChange(entityId) {
-    if (!entityId || !this._hass?.callWS) return;
+    if (!entityId || !this._hass?.callWS || this._dayChangeDisabled) return;
     this._dayChangeUpdated = this._dayChangeUpdated || {};
     this._dayChangeRequestTokens = this._dayChangeRequestTokens || {};
     const now = Date.now();
@@ -1399,10 +1458,16 @@ class InvestmentTrackerCard extends HTMLElement {
       })
       .catch((err) => {
         if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
+        if (err?.code === "unknown_command") {
+          this._dayChangeStatus[entityId] = "unsupported";
+          this._dayChangeDisabled = true;
+          console.warn("Investment Tracker card: history/period WS command unsupported");
+          return;
+        }
         this._dayChangeStatus[entityId] = "error";
         // eslint-disable-next-line no-console
         console.warn("Investment Tracker card: day change fetch failed", err);
-        this._render();
+        this._loadDayChangeRest(entityId, startIso, requestToken);
       });
   }
 
