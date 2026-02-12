@@ -1,5 +1,5 @@
 # Investment Tracker Card
-![Investment Tracker](../branding/banner.svg)
+![Investment Tracker](/branding/banner.svg)
 
 A Lovelace dashboard card that mirrors the Home Assistant `investment_tracker` integration, providing summary totals, asset grids, and service controls with plan tracking built in.
 
@@ -47,7 +47,7 @@ show_plan: true
 | `show_charts` | bool | Wether to show the Charts section. |
 
 
->![NOTE]
+>[!NOTE]
 >- The card reads from `sensor.investment_tracker_{service}`, `sensor.{broker}_investment_*`, and asset sensors starting with `sensor.{broker}_assets_`.
 >- Ensure the integration is configured and reporting balances before adding the card.
 >- Call `investment_tracker.remap_symbol` (or use the repair flows) to fix ticker mismatches surfaced by the card.
