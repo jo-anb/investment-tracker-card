@@ -1945,7 +1945,9 @@ class InvestmentTrackerCard extends HTMLElement {
     const seen = new Set();
     assets = assets.filter((stateObj) => {
       const attrs = stateObj.attributes || {};
-      const key = `${attrs.symbol || ""}__${String(attrs.broker || "").toLowerCase()}` || stateObj.entity_id;
+      const symbol = attrs.symbol || "";
+      const broker = String(attrs.broker || "").toLowerCase();
+      const key = symbol || broker ? `${symbol}__${broker}` : stateObj.entity_id;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -2147,7 +2149,7 @@ class InvestmentTrackerCard extends HTMLElement {
     container.innerHTML = "";
     try {
       await this._ensureApexLoaded();
-    } catch (err) {
+    } catch {
       container.innerHTML = `<div class="chart-message">Chart library unavailable</div>`;
       return;
     }
@@ -2234,7 +2236,12 @@ class InvestmentTrackerCard extends HTMLElement {
         borderColor: "rgba(15, 23, 42, 0.08)",
       },
     };
-    this._apexChart = new ApexCharts(container, options);
+    const ApexChartsCtor = typeof window !== "undefined" ? window.ApexCharts : null;
+    if (!ApexChartsCtor) {
+      container.innerHTML = `<div class="chart-message">Chart library unavailable</div>`;
+      return;
+    }
+    this._apexChart = new ApexChartsCtor(container, options);
     this._apexChart.render();
   }
 
@@ -2264,7 +2271,7 @@ class InvestmentTrackerCard extends HTMLElement {
     if (this._apexChart) {
       try {
         this._apexChart.destroy();
-      } catch (err) {
+      } catch {
         // ignore
       }
       this._apexChart = null;
@@ -2565,7 +2572,7 @@ class InvestmentTrackerCard extends HTMLElement {
           return;
         }
         this._historyStatus[entityId] = "error";
-        // eslint-disable-next-line no-console
+         
         console.warn("Investment Tracker card: history fetch failed", err);
         this._render();
       });
@@ -2583,7 +2590,7 @@ class InvestmentTrackerCard extends HTMLElement {
       .catch((err) => {
         if (this._historyRequestTokens?.[entityId] !== requestToken) return;
         this._historyStatus[entityId] = "error";
-        // eslint-disable-next-line no-console
+         
         console.warn("Investment Tracker card: history fetch failed (REST)", err);
         this._render();
       });
@@ -2641,7 +2648,7 @@ class InvestmentTrackerCard extends HTMLElement {
             return;
           }
           this._dayChangeStatus[entityId] = "error";
-          // eslint-disable-next-line no-console
+           
           console.warn("Investment Tracker card: day change fetch failed", err);
           fetchRest();
         });
