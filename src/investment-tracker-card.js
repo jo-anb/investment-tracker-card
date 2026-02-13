@@ -2789,10 +2789,29 @@ class InvestmentTrackerCard extends HTMLElement {
     if (!hasWs && !hasRest) return;
     this._dayChangeUpdated = this._dayChangeUpdated || {};
     this._dayChangeRequestTokens = this._dayChangeRequestTokens || {};
+    this._dayChangeEntityStates = this._dayChangeEntityStates || {};
+    
     const now = Date.now();
     const last = this._dayChangeUpdated[entityId] || 0;
-    if (now - last < 300000 && this._dayChangeCache?.[entityId]) {
+    const timeSinceLastCheck = now - last;
+    const hasCache = !!this._dayChangeCache?.[entityId];
+    
+    // Check if entity state has changed
+    const currentState = this._hass?.states?.[entityId]?.state;
+    const lastKnownState = this._dayChangeEntityStates[entityId];
+    const stateHasChanged = currentState !== lastKnownState;
+    this._dayChangeEntityStates[entityId] = currentState;
+    
+    // Skip fetch if: cache is valid AND state hasn't changed
+    if (timeSinceLastCheck < 300000 && hasCache && !stateHasChanged) {
+      this._log("[_ensureDayChange] Cache still valid for", entityId, "- skipping fetch. Time since last:", Math.round(timeSinceLastCheck / 1000) + "s");
       return;
+    }
+    
+    if (stateHasChanged) {
+      this._log("[_ensureDayChange] Entity state changed for", entityId, "- forcing refresh. New state:", currentState);
+    } else if (timeSinceLastCheck >= 300000) {
+      this._log("[_ensureDayChange] Cache expired for", entityId, "- fetching fresh data. Time since last:", Math.round(timeSinceLastCheck / 1000) + "s");
     }
     this._dayChangeUpdated[entityId] = now;
     const start = new Date();
@@ -2883,6 +2902,7 @@ class InvestmentTrackerCard extends HTMLElement {
     const change = latestValue - startValue;
     const pct = startValue ? (change / startValue) * 100 : 0;
     this._dayChangeCache[entityId] = { value: change, pct };
+    this._log("[_handleDayChangeResponse] Calculated day change for", entityId, "- value:", change, "pct:", pct);
     this._render();
   }
 
