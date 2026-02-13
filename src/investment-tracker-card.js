@@ -36,6 +36,7 @@ class InvestmentTrackerCard extends HTMLElement {
   _dayChangeStartTimes = {};
   _assetSearchTerm = "";
   _assetBrokerFilter = "";
+  _metricFilter = null; // { type: "currency" | "sector" | "category", value: string }
   _assetSortKey = "value";
   _assetSortDirection = "desc";
   _assetSortPopupVisible = false;
@@ -431,6 +432,11 @@ class InvestmentTrackerCard extends HTMLElement {
         .pie-card { background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; min-height: 180px; display: flex; flex-direction: column; gap: 8px; }
         .legend { display: flex; flex-direction: column; gap: 6px; }
         .legend-row { display: grid; grid-template-columns: 1fr 48px; gap: 8px; align-items: center; font-size: 12px; }
+        .legend-row[data-metric-type] { cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: all 0.2s ease; }
+        .legend-row[data-metric-type]:hover { background: rgba(59, 130, 246, 0.1); }
+        .legend-row.metric-active { background: rgba(59, 130, 246, 0.2); font-weight: 600; border: 1px solid rgba(59, 130, 246, 0.4); }
+        .metric-filter-clear { background: var(--error-color, #e53935); color: #fff; border: none; border-radius: 999px; padding: 4px 12px; font-size: 11px; cursor: pointer; margin-left: 8px; transition: all 0.2s ease; }
+        .metric-filter-clear:hover { opacity: 0.9; }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-color, #41bdf5); display: inline-block; margin-right: 6px; }
         .plan-card { margin-top: 16px; background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; }
         .plan-card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
@@ -507,6 +513,7 @@ class InvestmentTrackerCard extends HTMLElement {
 
     this._bindAssetSelection();
     this._bindAssetFilterControls();
+    this._bindMetricFilters();
     this._bindPlanCardActions(serviceEntity);
 
     const refreshEl = this.content.querySelector("#refresh");
@@ -830,6 +837,26 @@ class InvestmentTrackerCard extends HTMLElement {
       if (brokerFilter && (attrs.broker || "").toLowerCase() !== brokerFilter) {
         return false;
       }
+      // Apply metric filter (currency, sector, or category)
+      if (this._metricFilter) {
+        const { type, value } = this._metricFilter;
+        if (type === "currency") {
+          const assetCurrency = (attrs.currency || "").toUpperCase();
+          if (assetCurrency !== value.toUpperCase()) {
+            return false;
+          }
+        } else if (type === "sector") {
+          const assetSector = (attrs.sector || "Unknown").toString().trim();
+          if (assetSector !== value) {
+            return false;
+          }
+        } else if (type === "category") {
+          const assetCategory = (attrs.category || "Other").toString();
+          if (assetCategory !== value) {
+            return false;
+          }
+        }
+      }
       if (!search) {
         return true;
       }
@@ -959,6 +986,45 @@ class InvestmentTrackerCard extends HTMLElement {
       this._assetSearchTimer = null;
       this._render();
     }, 280);
+  }
+
+  _bindMetricFilters() {
+    if (!this.content) return;
+    const legendRows = this.content.querySelectorAll(".legend-row[data-metric-type]");
+    legendRows.forEach((row) => {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const type = row.dataset.metricType;
+        const value = row.dataset.metricValue;
+        
+        // Toggle filter: if clicking same metric, clear it; otherwise set it
+        if (this._metricFilter?.type === type && this._metricFilter?.value === value) {
+          this._metricFilter = null;
+          this._log("[_bindMetricFilters] Cleared metric filter");
+        } else {
+          this._metricFilter = { type, value };
+          this._log("[_bindMetricFilters] Set metric filter:", type, value);
+        }
+        this._render();
+      });
+    });
+    
+    // Add clear filter button to asset header if filter is active
+    const assetHeader = this.content.querySelector(".assets-header");
+    if (assetHeader && this._metricFilter) {
+      const clearBtn = document.createElement("button");
+      clearBtn.className = "metric-filter-clear";
+      clearBtn.textContent = `✕ ${this._metricFilter.value}`;
+      clearBtn.title = "Clear metric filter";
+      clearBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this._metricFilter = null;
+        this._log("[_bindMetricFilters] Cleared metric filter via button");
+        this._render();
+      });
+      assetHeader.appendChild(clearBtn);
+    }
   }
 
   _captureAssetSearchFocus() {
@@ -2569,7 +2635,9 @@ class InvestmentTrackerCard extends HTMLElement {
       .sort((a, b) => b[1] - a[1])
       .map(([currency, value]) => {
         const pct = total > 0 ? ((value / total) * 100).toFixed(3) : "0.000";
-        return `<div class="legend-row"><span><span class="legend-dot"></span>${currency}</span><span>${pct}%</span></div>`;
+        const isActive = this._metricFilter?.type === "currency" && this._metricFilter?.value === currency;
+        const activeClass = isActive ? " metric-active" : "";
+        return `<div class="legend-row${activeClass}" data-metric-type="currency" data-metric-value="${this._escapeAttribute(currency)}"><span><span class="legend-dot"></span>${currency}</span><span>${pct}%</span></div>`;
       })
       .join("");
     return `<div class="legend">${rows}</div>`;
@@ -2598,7 +2666,9 @@ class InvestmentTrackerCard extends HTMLElement {
       .sort((a, b) => b.value - a.value)
       .map(({ label, value }) => {
         const pct = total > 0 ? ((value / total) * 100).toFixed(3) : "0.000";
-        return `<div class="legend-row"><span><span class="legend-dot"></span>${label}</span><span>${pct}%</span></div>`;
+        const isActive = this._metricFilter?.type === "sector" && this._metricFilter?.value === label;
+        const activeClass = isActive ? " metric-active" : "";
+        return `<div class="legend-row${activeClass}" data-metric-type="sector" data-metric-value="${this._escapeAttribute(label)}"><span><span class="legend-dot"></span>${label}</span><span>${pct}%</span></div>`;
       })
       .join("");
     return `<div class="legend">${rows}</div>`;
@@ -2622,7 +2692,9 @@ class InvestmentTrackerCard extends HTMLElement {
       .sort((a, b) => b[1] - a[1])
       .map(([category, value]) => {
         const pct = total > 0 ? ((value / total) * 100).toFixed(3) : "0.000";
-        return `<div class="legend-row"><span><span class="legend-dot"></span>${category}</span><span>${pct}%</span></div>`;
+        const isActive = this._metricFilter?.type === "category" && this._metricFilter?.value === category;
+        const activeClass = isActive ? " metric-active" : "";
+        return `<div class="legend-row${activeClass}" data-metric-type="category" data-metric-value="${this._escapeAttribute(category)}"><span><span class="legend-dot"></span>${category}</span><span>${pct}%</span></div>`;
       })
       .join("");
     return `<div class="legend">${rows}</div>`;
