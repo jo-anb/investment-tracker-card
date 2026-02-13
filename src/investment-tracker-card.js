@@ -45,6 +45,7 @@ class InvestmentTrackerCard extends HTMLElement {
   _pendingAssetSearchFocus = null;
   _preservedAssetSearchInput = null;
   _assetFiltersOpen = false;
+  _manualPricedAssets = {}; // { entity_id: { quantity, transaction_price, currency } }
   _settingsDialog = null;
   _planEditorOverlay = null;
   _planEditorEntries = [];
@@ -167,19 +168,30 @@ class InvestmentTrackerCard extends HTMLElement {
     )}`;
     const dayChangePctDisplay = `${displayedDayChangePct >= 0 ? "+" : "-"}${this._formatNumber(Math.abs(displayedDayChangePct))}%`;
     const dayChangeFoot = `<div class="metric-foot">${dayChangePctDisplay} today</div>`;
+    
+    // Get assets first (needed for manual price calculations)
+    const assetStates = this._getAssets(serviceBrokerSlugs, serviceBrokerNames);
+    
     const totalValueNumber = this._getStateNumber(totalValueEntityId);
     const totalInvestedNumber = this._getStateNumber(totalInvestedEntityId);
     const totalPLNumber = this._getStateNumber(totalPLEntityId);
     const totalPLPctNumberSensor = this._getStateNumber(totalPLPctEntityId);
+    
+    // Add manual-priced assets to totals
+    const manualPriceAdditions = this._calculateManualPriceAdditions(assetStates);
+    const adjustedTotalValueNumber = totalValueNumber + manualPriceAdditions.value;
+    const adjustedTotalInvestedNumber = totalInvestedNumber + manualPriceAdditions.invested;
+    const adjustedTotalPLNumber = totalPLNumber + manualPriceAdditions.pl;
+    
     let totalPLPctComputed = NaN;
-    if (totalInvestedNumber) {
-      totalPLPctComputed = (totalPLNumber / totalInvestedNumber) * 100;
+    if (adjustedTotalInvestedNumber) {
+      totalPLPctComputed = (adjustedTotalPLNumber / adjustedTotalInvestedNumber) * 100;
     } else if (Number.isFinite(totalPLPctNumberSensor)) {
       totalPLPctComputed = totalPLPctNumberSensor;
     }
-    const totalValue = this._formatNumber(totalValueNumber);
-    const totalInvested = this._formatNumber(totalInvestedNumber);
-    const totalPL = this._formatNumber(totalPLNumber);
+    const totalValue = this._formatNumber(adjustedTotalValueNumber);
+    const totalInvested = this._formatNumber(adjustedTotalInvestedNumber);
+    const totalPL = this._formatNumber(adjustedTotalPLNumber);
     const totalPLPct = this._formatNumber(totalPLPctComputed);
     const totalActiveInvestedValue = this._getStateNumber(totalActiveInvestedEntityId);
     const totalActiveInvested = this._formatNumber(totalActiveInvestedValue);
@@ -206,7 +218,6 @@ class InvestmentTrackerCard extends HTMLElement {
       `
       : "";
 
-    const assetStates = this._getAssets(serviceBrokerSlugs, serviceBrokerNames);
     const assetBrokerOptions = this._getAssetBrokerOptions(assetStates);
     const displayAssets = this._applyAssetFilters(assetStates);
     const summaryAssets = this._selectedAssetEntityId
@@ -389,6 +400,7 @@ class InvestmentTrackerCard extends HTMLElement {
         .asset-link-button:hover { background: rgba(0, 0, 0, 0.04); }
         .asset-link-button.mapped { color: var(--primary-color, #1976d2); }
         .asset-link-button.unmapped { color: var(--error-color, #e53935); }
+        .asset-link-button.manual-price { color: var(--warning-color, #ff9800); }
         .asset-link-button ha-icon { width: 10px; height: 10px; }
         .asset-history-button { border: 0; background: transparent; width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; transition: background 0.2s ease, color 0.2s ease; color: var(--secondary-text-color, #6b7280); align-self: flex-start; }
         .asset-history-button:hover { background: rgba(0, 0, 0, 0.04); }
@@ -606,7 +618,8 @@ class InvestmentTrackerCard extends HTMLElement {
       const rows = assets
       .map((stateObj) => {
         const attrs = stateObj.attributes || {};
-        if (this.config.hide_unmapped && attrs.unmapped) return "";
+        // Hide unmapped assets only if not using manual transaction price
+        if (this.config.hide_unmapped && attrs.unmapped && !attrs.use_transaction_price) return "";
         const refreshButton = this.config.show_asset_refresh
           ? `<button class="asset-refresh" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}">↻</button>`
           : "";
@@ -615,12 +628,15 @@ class InvestmentTrackerCard extends HTMLElement {
           attrs.friendly_name || attrs.symbol || stateObj.entity_id,
           [brokerName, attrs.broker]
         );
-        const valueRaw = Number(attrs.market_value ?? stateObj.state) || 0;
+        const valueRaw = this._getAssetValue(stateObj);
         const plRaw = Number(attrs.profit_loss_pct ?? 0);
         const value = this._formatNumber(valueRaw);
         const pl = this._formatNumber(plRaw);
         const currencySymbol = this._getCurrencySymbol(attrs.currency || "") || portfolioSymbol;
-        const priceRaw = Number(attrs.current_price ?? NaN);
+        const lastTransaction = attrs.use_transaction_price && Array.isArray(attrs.transactions) && attrs.transactions.length > 0
+          ? attrs.transactions[attrs.transactions.length - 1]
+          : null;
+        const priceRaw = lastTransaction ? Number(lastTransaction.price ?? NaN) : Number(attrs.current_price ?? NaN);
         const hasPrice = Number.isFinite(priceRaw);
         const priceText = hasPrice ? `${currencySymbol}${this._formatNumber(priceRaw)}` : "-";
         const priceMovement = this._getAssetPriceTrend(stateObj.entity_id, priceRaw);
@@ -633,14 +649,17 @@ class InvestmentTrackerCard extends HTMLElement {
         const selected = stateObj.entity_id === this._selectedAssetEntityId;
         const rowClass = `asset-row${selected ? " selected" : ""}`;
         const isUnmapped = Boolean(attrs.unmapped);
-        const mapIcon = isUnmapped ? "mdi:link-off" : "mdi:link";
-        const mapLabel = isUnmapped
+        const useManualPrice = Boolean(attrs.use_transaction_price);
+        const mapIcon = useManualPrice ? "mdi:pencil" : isUnmapped ? "mdi:link-off" : "mdi:link";
+        const mapLabel = useManualPrice
+          ? "Handmatige prijs bewerken"
+          : isUnmapped
           ? "Niet gekoppeld asset openen"
           : "Gekoppeld asset bewerken";
         const historyLabel = "Transactiegeschiedenis";
         const historyButton = `<button type="button" class="asset-history-button" data-entity="${stateObj.entity_id}" title="${this._escapeAttribute(historyLabel)}" aria-label="${this._escapeAttribute(historyLabel)}"><ha-icon icon="mdi:history"></ha-icon></button>`;
         const mapButton = `<button type="button" class="asset-link-button ${
-          isUnmapped ? "unmapped" : "mapped"
+          useManualPrice ? "manual-price" : isUnmapped ? "unmapped" : "mapped"
         }" data-entity="${stateObj.entity_id}" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}" data-category="${assetCategory}" title="${this._escapeAttribute(
           mapLabel
         )}" aria-label="${this._escapeAttribute(mapLabel)}"><ha-icon icon="${mapIcon}"></ha-icon></button>`;
@@ -701,6 +720,10 @@ class InvestmentTrackerCard extends HTMLElement {
                   <option value="fund" style="background:#fff;color:#222;">Fonds</option>
                   <option value="other" style="background:#fff;color:#222;">Overig</option>
                 </select>
+              </label>
+              <label style="font-weight:500;display:flex;align-items:center;gap:8px;margin-top:4px;">
+                <input id="remap-use-transaction-price" type="checkbox" style="width:18px;height:18px;cursor:pointer;" />
+                <span>Handmatige transactieprijs gebruiken</span>
               </label>
             </div>
             <div class="remap-suggestions" style="margin-top:4px;">
@@ -1095,6 +1118,15 @@ class InvestmentTrackerCard extends HTMLElement {
     const normalized = String(category || "").trim().toLowerCase() || "equity";
     const validCategories = ["equity", "etf", "bond", "commodity", "crypto", "cash", "fund", "other"];
     categorySelect.value = validCategories.includes(normalized) ? normalized : "equity";
+    
+    const useTransactionPriceCheckbox = this._remapDialog.querySelector("#remap-use-transaction-price");
+    if (useTransactionPriceCheckbox && entityId && this._hass?.states?.[entityId]) {
+      const currentAttrs = this._hass.states[entityId]?.attributes || {};
+      useTransactionPriceCheckbox.checked = currentAttrs.use_transaction_price === true;
+    } else if (useTransactionPriceCheckbox) {
+      useTransactionPriceCheckbox.checked = false;
+    }
+    
     const cancel = this._remapDialog.querySelector("#remap-cancel");
     const save = this._remapDialog.querySelector("#remap-save");
     const close = () => {
@@ -1105,11 +1137,15 @@ class InvestmentTrackerCard extends HTMLElement {
     save.onclick = () => {
       const ticker = input.value.trim();
       const category = categorySelect.value;
+      const useTransactionPrice = useTransactionPriceCheckbox?.checked ?? false;
+      
       // Only send fields that are actually changed
       const payload = { symbol, broker };
       if (ticker) payload.ticker = ticker;
       if (category) payload.category = category;
-      if (!ticker && !category) {
+      if (useTransactionPrice) payload.use_transaction_price = true;
+      
+      if (!ticker && !category && !useTransactionPrice) {
         this._log("[_showRemapDialog] Remap aborted (nothing changed)", { payload });
         input.focus();
         return;
@@ -2720,6 +2756,73 @@ class InvestmentTrackerCard extends HTMLElement {
         entityId.endsWith(key)
     );
     return fallback || null;
+  }
+
+  _getAssetValue(stateObj) {
+    if (!stateObj) return 0;
+    const attrs = stateObj.attributes || {};
+    
+    // Check if this is a manual-priced asset
+    if (attrs.use_transaction_price) {
+      const lastTransaction = Array.isArray(attrs.transactions) && attrs.transactions.length > 0
+        ? attrs.transactions[attrs.transactions.length - 1]
+        : null;
+      
+      if (lastTransaction) {
+        const assetQuantity = Number(attrs.quantity) || 0;
+        const transactionPrice = Number(lastTransaction.price) || 0;
+        return assetQuantity * transactionPrice;
+      }
+    }
+    
+    // Otherwise use market_value
+    return Number(attrs.market_value ?? stateObj.state) || 0;
+  }
+
+  _calculateManualPriceAdditions(assets) {
+    let totalValue = 0;
+    let totalInvested = 0;
+    let totalPL = 0;
+    
+    (Array.isArray(assets) ? assets : []).forEach((stateObj) => {
+      const attrs = stateObj.attributes || {};
+      if (attrs.use_transaction_price) {
+        const lastTransaction = Array.isArray(attrs.transactions) && attrs.transactions.length > 0
+          ? attrs.transactions[attrs.transactions.length - 1]
+          : null;
+        
+        if (lastTransaction) {
+          const assetQuantity = Number(attrs.quantity) || 0;
+          const lastTransactionPrice = Number(lastTransaction.price) || 0;
+          
+          // Calculate weighted average price from all transactions
+          let totalQty = 0;
+          let totalCost = 0;
+          const transactions = Array.isArray(attrs.transactions) ? attrs.transactions : [];
+          
+          transactions.forEach((tx) => {
+            const txQty = Number(tx.quantity) || 0;
+            const txPrice = Number(tx.price) || 0;
+            totalQty += txQty;
+            totalCost += txQty * txPrice;
+          });
+          
+          const avgBuyPrice = totalQty > 0 ? totalCost / totalQty : 0;
+          
+          const currentValue = assetQuantity * lastTransactionPrice;
+          const investedValue = assetQuantity * avgBuyPrice;
+          const pl = currentValue - investedValue;
+          
+          totalValue += currentValue;
+          totalInvested += investedValue;
+          totalPL += pl;
+          
+          this._log("[_calculateManualPriceAdditions]", attrs.symbol || stateObj.entity_id, "- qty:", assetQuantity, "avg_buy:", avgBuyPrice, "last_tx_price:", lastTransactionPrice, "value:", currentValue, "invested:", investedValue, "pl:", pl);
+        }
+      }
+    });
+    
+    return { value: totalValue, invested: totalInvested, pl: totalPL };
   }
 
   _slugify(value) {
