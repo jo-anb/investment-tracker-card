@@ -18,7 +18,7 @@ const PLAN_FREQUENCIES = [
 /* Investment Tracker Card (skeleton) */
 class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
-  _historyRange = "1D";
+  _historyRange = "4H";
   _historyRanges = ["4H", "1D", "1W", "1M", "3M", "1Y", "ALL"];
   _selectedAssetEntityId = null;
   _selectedAssetName = null;
