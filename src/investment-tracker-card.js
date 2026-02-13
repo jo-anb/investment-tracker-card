@@ -359,7 +359,7 @@ class InvestmentTrackerCard extends HTMLElement {
         .assets-header { font-weight: 600; margin-bottom: 8px; }
         .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); cursor: pointer; transition: background 0.2s ease; gap: 12px; }
         .asset-row:last-child { border-bottom: 0; }
-        .asset-row.selected { background: color-mix(in srgb, var(--primary-color, #1976d2) 90%, #fff); }
+        .asset-row.selected { background: rgba(59, 130, 246, 0.2); border-radius: 6px; border: 1px solid rgba(59, 130, 246, 0.4); padding: 7px 6px; }
         .asset-filters { color: #0f172a; border-radius: 12px; background: var(--card-background-color, #fff); border: 1px solid rgba(15, 23, 42, 0.08); padding: 10px 14px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08); display: flex; flex-direction: column; gap: 8px; }
         .asset-filter-group { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
         .asset-filter { display: flex; flex-direction: column; gap: 4px; min-width: 180px; flex: 1; }
