@@ -19,10 +19,11 @@ const PLAN_FREQUENCIES = [
 class InvestmentTrackerCard extends HTMLElement {
   _assetListScroll = 0;
   _historyRange = "1D";
-  _historyRanges = ["1D", "1W", "1M", "3M", "1Y", "ALL"];
+  _historyRanges = ["4H", "1D", "1W", "1M", "3M", "1Y", "ALL"];
   _selectedAssetEntityId = null;
   _selectedAssetName = null;
   _portfolioEntityId = null;
+  _chartMode = "portfolio"; // "portfolio" or "price"
   _apexChart = null;
   _apexLoadPromise = null;
   _pendingApexRender = null;
@@ -69,10 +70,22 @@ class InvestmentTrackerCard extends HTMLElement {
       show_plan: true,
       service_entity: null,
       broker: null,
-      default_service_entity: null, // Nieuw: default service entity
+      default_service_entity: null,
+      debug: false, // Enable/disable console logging
       ...config,
     };
+    this._debug = this.config.debug || false;
     this._assetListScroll = 0; // Track the scroll position globally
+  }
+  
+  _log(message, data) {
+    if (this._debug) {
+      if (data !== undefined) {
+        console.log(message, data);
+      } else {
+        console.log(message);
+      }
+    }
   }
 
   _loadDayChangeRest(entityId, startIso, requestToken) {
@@ -88,7 +101,7 @@ class InvestmentTrackerCard extends HTMLElement {
       .catch((err) => {
         if (this._dayChangeRequestTokens?.[entityId] !== requestToken) return;
         this._dayChangeStatus[entityId] = "error";
-        console.warn("Investment Tracker card: day change REST fetch failed", err);
+        console.warn("investment_tracker_card._loadDayChangeRest(): day change REST fetch failed", err);
         this._render();
       });
   }
@@ -407,9 +420,13 @@ class InvestmentTrackerCard extends HTMLElement {
         .bar-track { height: 8px; background: rgba(0,0,0,0.08); border-radius: 999px; overflow: hidden; }
         .bar-fill { height: 100%; background: var(--accent-color, #41bdf5); }
         .bar-value { font-size: 12px; text-align: right; }
-        .chart-range { display: flex; gap: 6px; flex-wrap: wrap; }
-        .chart-range button { background: transparent; border: 1px solid var(--divider-color, #ddd); border-radius: 999px; padding: 4px 10px; font-size: 12px; }
+        .chart-range { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .chart-range button { background: transparent; border: 1px solid var(--divider-color, #ddd); border-radius: 999px; padding: 4px 10px; font-size: 12px; transition: all 0.2s ease; cursor: pointer; }
+        .chart-range button:hover { background: var(--secondary-background-color, #f7f9fc); }
         .chart-range button.active { background: var(--primary-color, #1976d2); color: #fff; border-color: var(--primary-color, #1976d2); }
+        .chart-mode-toggle { background: linear-gradient(135deg, var(--primary-color, #1976d2), var(--primary-color-dark, #1565c0)); color: #fff; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 11px; font-weight: 700; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); margin-left: 8px; }
+        .chart-mode-toggle:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
+        .chart-mode-toggle:active { transform: translateY(0); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
         .split-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 16px; }
         .pie-card { background: var(--secondary-background-color, #f7f9fc); border-radius: 12px; padding: 12px; min-height: 180px; display: flex; flex-direction: column; gap: 8px; }
         .legend { display: flex; flex-direction: column; gap: 6px; }
@@ -475,6 +492,7 @@ class InvestmentTrackerCard extends HTMLElement {
 
     this._restorePreservedAssetSearchInput();
     if (activeChartEntity) {
+      // Always render to the portfolio entity's container, but use price data if in price mode
       this._scheduleApexChartRender(activeChartEntity, portfolioSymbol);
     }
     this._bindChartRangeButtons(activeChartEntity);
@@ -1003,7 +1021,7 @@ class InvestmentTrackerCard extends HTMLElement {
     modal.style.display = "flex";
     this._remapDialog.querySelector("#remap-symbol").textContent = symbol || "-";
     this._remapDialog.querySelector("#remap-broker").textContent = broker || "-";
-    console.log("[investment-tracker-card] opening remap", { symbol, broker, category });
+    // console.debug("investment_tracker_card._showRemapDialog(): opening remap", { symbol, broker, category });
     const input = this._remapDialog.querySelector("#remap-ticker");
     const categorySelect = this._remapDialog.querySelector("#remap-category");
     input.value = "";
@@ -1026,12 +1044,12 @@ class InvestmentTrackerCard extends HTMLElement {
       if (ticker) payload.ticker = ticker;
       if (category) payload.category = category;
       if (!ticker && !category) {
-        console.log("[investment-tracker-card] remap aborted (nothing changed)", { payload });
+        this._log("[_showRemapDialog] Remap aborted (nothing changed)", { payload });
         input.focus();
         return;
       }
       if (this._hass) {
-        console.log("[investment-tracker-card] calling remap_symbol", payload);
+        this._log("[_showRemapDialog] Calling remap_symbol", payload);
         this._hass.callService("investment_tracker", "remap_symbol", payload);
         close();
       }
@@ -1872,7 +1890,7 @@ class InvestmentTrackerCard extends HTMLElement {
       })
       .catch((err) => {
         this._planEditorSetStatus("Failed to save plan", true);
-        console.error("Investment Tracker card: plan update failed", err);
+        console.error("[investment_tracker_card._savePlanFromEditor()]: plan update failed", err);
       })
       .finally(() => {
         this._planEditorSaving = false;
@@ -2102,11 +2120,17 @@ class InvestmentTrackerCard extends HTMLElement {
       ? "No history data yet"
       : "History unavailable";
     const containerId = this._chartContainerId(entityId);
+    const chartModeToggle =
+      this._selectedAssetEntityId && this._chartMode === "portfolio"
+        ? `<button class="chart-mode-toggle" data-mode="price">Switch to Price</button>`
+        : this._selectedAssetEntityId && this._chartMode === "price"
+        ? `<button class="chart-mode-toggle" data-mode="portfolio">Switch to Value</button>`
+        : "";
     return `
       <div class="apex-chart" id="${containerId}">
         ${statusMessage ? `<div class="chart-message">${statusMessage}</div>` : ""}
       </div>
-      <div class="metric-foot">Latest: ${currencySymbol}${this._formatNumber(latestValue)}</div>
+      <div class="metric-foot">Latest: ${currencySymbol}${this._formatNumber(latestValue)} ${chartModeToggle}</div>
     `;
   }
 
@@ -2141,9 +2165,25 @@ class InvestmentTrackerCard extends HTMLElement {
     if (!entityId || !this.content) return;
     const container = this.content.querySelector(`#${this._chartContainerId(entityId)}`);
     if (!container) return;
-    const points = this._historyCache?.[entityId] || [];
+    
+    // Determine which entity's history to use based on chart mode
+    let dataEntityId = entityId;
+    if (this._chartMode === "price" && this._selectedAssetEntityId) {
+      const priceEntityId = this._getPriceEntityIdForAsset();
+      if (priceEntityId) {
+        dataEntityId = priceEntityId;
+        this._log("[_renderApexChart] PRICE MODE - Using price entity:", dataEntityId);
+      }
+    }
+    
+    const points = this._historyCache?.[dataEntityId] || [];
+    this._log(`[_renderApexChart] Chart mode: ${this._chartMode}, Entity: ${dataEntityId}, Points: ${points.length}`);
+    
+    // Always destroy old chart before rendering new one
+    this._destroyApexChart();
+    
     if (!points.length) {
-      this._destroyApexChart();
+      this._log(`[_renderApexChart] No points for ${dataEntityId}, history cache keys:`, Object.keys(this._historyCache || {}));
       return;
     }
     container.innerHTML = "";
@@ -2156,7 +2196,7 @@ class InvestmentTrackerCard extends HTMLElement {
     const accentColor = this._getCssColor("--primary-color") || "#2563eb";
     const now = Date.now();
     const rangeDays = this._historyRangeToDays(this._historyRange);
-    const rangeMs = Math.max(rangeDays, 1) * 24 * 60 * 60 * 1000;
+    const rangeMs = rangeDays * 24 * 60 * 60 * 1000;
     const rangeStart = now - rangeMs;
     let series = points.map((point) => ({
       x: new Date(point.time).getTime(),
@@ -2297,7 +2337,125 @@ class InvestmentTrackerCard extends HTMLElement {
         }
       });
     });
+    const modeToggle = this.content?.querySelector(".chart-mode-toggle");
+    if (modeToggle) {
+      modeToggle.addEventListener("click", async () => {
+        const newMode = modeToggle.dataset.mode;
+        this._log("[_bindChartRangeButtons] Mode toggle clicked, new mode:", newMode);
+        if (newMode) {
+          this._chartMode = newMode;
+          if (this._selectedAssetEntityId && newMode === "price") {
+            this._log("[_bindChartRangeButtons] Selected asset:", this._selectedAssetEntityId);
+            const priceEntityId = this._getPriceEntityIdForAsset();
+            this._log("[_bindChartRangeButtons] Price entity ID:", priceEntityId);
+            if (priceEntityId && this._hass) {
+              // Check if price entity exists in Home Assistant
+              const priceEntity = this._hass.states[priceEntityId];
+              this._log("[_bindChartRangeButtons] Price entity exists:", !!priceEntity);
+              if (priceEntity) {
+                this._log("[_bindChartRangeButtons] Price entity state:", priceEntity.state);
+              }
+              // List all available entities that contain 'price'
+              const priceEntities = Object.keys(this._hass.states).filter(id => id.includes('price'));
+              this._log("[_bindChartRangeButtons] Available price entities:", priceEntities);
+              
+              this._historyUpdated = this._historyUpdated || {};
+              this._historyStatus = this._historyStatus || {};
+              this._historyUpdated[priceEntityId] = 0;
+              this._historyStatus[priceEntityId] = "loading";
+              // Wait for history to load before rendering
+              await this._loadHistory(priceEntityId, { force: true, range: this._historyRange });
+            }
+          }
+          this._render();
+        }
+      });
+    }
   }
+
+  _getPriceEntityIdForAsset() {
+    if (!this._selectedAssetEntityId) {
+      this._log("[_getPriceEntityIdForAsset] No selected asset");
+      return null;
+    }
+    const asset = this._hass?.states[this._selectedAssetEntityId];
+    if (!asset) {
+      this._log("[_getPriceEntityIdForAsset] Asset entity not found:", this._selectedAssetEntityId);
+      return null;
+    }
+    
+    const broker = asset.attributes?.broker || "";
+    if (!broker) {
+      this._log("[_getPriceEntityIdForAsset] Missing broker");
+      return null;
+    }
+    
+    const brokerSlug = String(broker).toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const allEntities = Object.keys(this._hass.states || {});
+    const priceEntities = allEntities.filter(id => id.includes("price"));
+    
+    // Helper function to slugify text - replaces multiple non-alphanumeric chars with single underscore
+    const slugify = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    
+    // Try symbol first
+    const symbol = asset.attributes?.symbol || "";
+    if (symbol) {
+      const symbolSlug = slugify(symbol);
+      this._log("[_getPriceEntityIdForAsset] Trying symbol match - broker:", brokerSlug, "symbol:", symbolSlug);
+      
+      // First, try exact match: sensor.{broker}_{symbol}_price
+      let priceEntityId = `sensor.${brokerSlug}_${symbolSlug}_price`;
+      if (priceEntities.includes(priceEntityId)) {
+        this._log("[_getPriceEntityIdForAsset] Found exact price entity by symbol:", priceEntityId);
+        return priceEntityId;
+      }
+      
+      // Search for price entity containing both broker and symbol
+      for (const entity of priceEntities) {
+        if (entity.includes(brokerSlug) && entity.includes(symbolSlug)) {
+          this._log("[_getPriceEntityIdForAsset] Found matching price entity by symbol:", entity);
+          return entity;
+        }
+      }
+    }
+    
+    // Try friendly_name if symbol didn't match
+    const friendlyName = asset.attributes?.friendly_name || "";
+    if (friendlyName) {
+      this._log("[_getPriceEntityIdForAsset] Original friendly_name:", friendlyName);
+      
+      // Remove broker prefix and "price" suffix and "_value" from friendly_name before slugifying
+      let cleanName = friendlyName;
+      if (cleanName.toLowerCase().startsWith(broker.toLowerCase())) {
+        cleanName = cleanName.substring(broker.length).trim();
+      }
+      this._log("[_getPriceEntityIdForAsset] After removing broker prefix:", cleanName);
+      
+      cleanName = cleanName.replace(/\s*price\s*$/i, "").trim();
+      this._log("[_getPriceEntityIdForAsset] After removing price suffix:", cleanName);
+      
+      cleanName = cleanName.replace(/_value\s*$/i, "").trim();
+      this._log("[_getPriceEntityIdForAsset] After removing _value suffix:", cleanName);
+      
+      let friendlyNameSlug = slugify(cleanName);
+      // Also remove _value from the slugified version in case it slipped through
+      friendlyNameSlug = friendlyNameSlug.replace(/_value$/, "");
+      
+      this._log("[_getPriceEntityIdForAsset] Trying friendly_name match - broker:", brokerSlug, "friendly_name:", friendlyNameSlug);
+      
+      // Search for price entity containing both broker and friendly_name
+      for (const entity of priceEntities) {
+        if (entity.includes(brokerSlug) && entity.includes(friendlyNameSlug)) {
+          this._log("[_getPriceEntityIdForAsset] Found matching price entity by friendly_name:", entity);
+          return entity;
+        }
+      }
+    }
+    
+    this._log("[_getPriceEntityIdForAsset] No matching price entity found for broker:", brokerSlug);
+    return null;
+  }
+
 
   _bindAssetSelection() {
     const rows = this.content?.querySelectorAll(".asset-row") || [];
@@ -2343,6 +2501,7 @@ class InvestmentTrackerCard extends HTMLElement {
     const alreadySelected = this._selectedAssetEntityId === entityId;
     this._selectedAssetEntityId = alreadySelected ? null : entityId;
     this._selectedAssetName = alreadySelected ? null : name || null;
+    this._chartMode = "portfolio"; // Reset chart mode when asset changes
     const targetEntity = this._selectedAssetEntityId || this._portfolioEntityId;
     if (targetEntity) {
       this._historyUpdated = this._historyUpdated || {};
@@ -2357,16 +2516,29 @@ class InvestmentTrackerCard extends HTMLElement {
   _selectHistoryRange(range, entityId) {
     if (!range || !entityId) return;
     this._historyRange = range;
+    
+    // Use price entity if in price mode
+    let targetEntity = entityId;
+    if (this._chartMode === "price" && this._selectedAssetEntityId) {
+      const priceEntityId = this._getPriceEntityIdForAsset();
+      if (priceEntityId) {
+        targetEntity = priceEntityId;
+      }
+    }
+    
     this._historyUpdated = this._historyUpdated || {};
     this._historyStatus = this._historyStatus || {};
-    this._historyUpdated[entityId] = 0;
-    this._historyStatus[entityId] = "loading";
-    this._loadHistory(entityId, { force: true, range });
+    this._historyUpdated[targetEntity] = 0;
+    this._historyStatus[targetEntity] = "loading";
+    // Destroy existing chart before loading new data to force re-render
+    this._destroyApexChart();
+    this._loadHistory(targetEntity, { force: true, range });
     this._render();
   }
 
   _historyRangeToDays(range) {
     const mapping = {
+      "4H": 0.167,
       "1D": 1,
       "1W": 7,
       "1M": 30,
@@ -2529,7 +2701,7 @@ class InvestmentTrackerCard extends HTMLElement {
   }
 
   _loadHistory(entityId, options = {}) {
-    if (!entityId || !this._hass?.callWS) return;
+    if (!entityId || !this._hass?.callWS) return Promise.resolve();
     const { force = false, range } = options;
     const requestedRange = range || this._historyRange;
     const now = Date.now();
@@ -2537,51 +2709,65 @@ class InvestmentTrackerCard extends HTMLElement {
     this._historyUpdated = this._historyUpdated || {};
     this._historyStatus = this._historyStatus || {};
     const last = this._historyUpdated[entityId] || 0;
-    if (!force && now - last < 300000) return;
+    if (!force && now - last < 300000) return Promise.resolve();
     this._historyUpdated[entityId] = now;
     this._historyStatus[entityId] = "loading";
     const requestToken = `${entityId}:${requestedRange}:${now}`;
     this._historyRequestTokens = this._historyRequestTokens || {};
     this._historyRequestTokens[entityId] = requestToken;
-    const timeoutId = setTimeout(() => {
-      if (this._historyRequestTokens[entityId] !== requestToken) return;
-      if (this._historyStatus[entityId] === "loading") {
-        this._historyStatus[entityId] = "empty";
-        this._render();
-      }
-    }, 8000);
-    const rangeDays = this._historyRangeToDays(requestedRange);
-    const start = new Date(now - 1000 * 60 * 60 * 24 * rangeDays).toISOString();
-    this._hass
-      .callWS({
-        type: "history/period",
-        start_time: start,
-        filter_entity_id: [entityId],
-        minimal_response: true,
-      })
-      .then((response) => {
-        clearTimeout(timeoutId);
+    this._log("[_loadHistory] Loading history for:", entityId, "range:", requestedRange);
+    
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
         if (this._historyRequestTokens[entityId] !== requestToken) return;
-        this._handleHistoryResponse(entityId, response?.[0] || []);
-      })
-      .catch((err) => {
-        clearTimeout(timeoutId);
-        if (this._historyRequestTokens[entityId] !== requestToken) return;
-        if (err?.code === "unknown_command") {
-          this._loadHistoryRest(entityId, start, requestToken);
-          return;
+        if (this._historyStatus[entityId] === "loading") {
+          this._historyStatus[entityId] = "empty";
+          this._log("[_loadHistory] Timeout loading history for:", entityId);
+          this._render();
         }
-        this._historyStatus[entityId] = "error";
-         
-        console.warn("Investment Tracker card: history fetch failed", err);
-        this._render();
-      });
+        resolve();
+      }, 8000);
+      
+      const rangeDays = this._historyRangeToDays(requestedRange);
+      const start = new Date(now - 1000 * 60 * 60 * 24 * rangeDays).toISOString();
+      this._hass
+        .callWS({
+          type: "history/period",
+          start_time: start,
+          filter_entity_id: [entityId],
+          minimal_response: true,
+        })
+        .then((response) => {
+          clearTimeout(timeoutId);
+          if (this._historyRequestTokens[entityId] !== requestToken) {
+            resolve();
+            return;
+          }
+          this._handleHistoryResponse(entityId, response?.[0] || []);
+          resolve();
+        })
+        .catch((err) => {
+          clearTimeout(timeoutId);
+          if (this._historyRequestTokens[entityId] !== requestToken) {
+            resolve();
+            return;
+          }
+          if (err?.code === "unknown_command") {
+            this._loadHistoryRest(entityId, start, requestToken).then(() => resolve());
+            return;
+          }
+          this._historyStatus[entityId] = "error";
+          console.warn("[investment_tracker_card._loadHistory()]:[HISTORY] fetch failed", err);
+          this._render();
+          resolve();
+        });
+    });
   }
 
   _loadHistoryRest(entityId, start, requestToken) {
-    if (!this._hass?.callApi) return;
+    if (!this._hass?.callApi) return Promise.resolve();
     const path = `history/period/${encodeURIComponent(start)}?filter_entity_id=${encodeURIComponent(entityId)}&minimal_response=1`;
-    this._hass
+    return this._hass
       .callApi("GET", path)
       .then((response) => {
         if (this._historyRequestTokens?.[entityId] !== requestToken) return;
@@ -2591,7 +2777,7 @@ class InvestmentTrackerCard extends HTMLElement {
         if (this._historyRequestTokens?.[entityId] !== requestToken) return;
         this._historyStatus[entityId] = "error";
          
-        console.warn("Investment Tracker card: history fetch failed (REST)", err);
+        console.warn("[investment_tracker_card._loadHistoryRest()]:[HISTORY] history fetch failed (REST)", err);
         this._render();
       });
   }
@@ -2639,7 +2825,7 @@ class InvestmentTrackerCard extends HTMLElement {
           if (this._dayChangeRequestTokens[entityId] !== requestToken) return;
           if (err?.code === "unknown_command") {
             if (hasRest) {
-              console.warn("Investment Tracker card: history/period WS command unsupported, falling back to REST");
+              console.warn("[investment_tracker_card._ensureDayChange()]:[HISTORY] history/period WS command unsupported, falling back to REST");
               fetchRest();
               return;
             }
@@ -2649,7 +2835,7 @@ class InvestmentTrackerCard extends HTMLElement {
           }
           this._dayChangeStatus[entityId] = "error";
            
-          console.warn("Investment Tracker card: day change fetch failed", err);
+          console.warn("[investment_tracker_card._ensureDayChange()]:[HISTORY] day change fetch failed", err);
           fetchRest();
         });
     } else {
@@ -2665,8 +2851,8 @@ class InvestmentTrackerCard extends HTMLElement {
       }))
       .filter((point) => Number.isFinite(point.value))
       .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
-    console.log(
-      "day change points",
+    this._log(
+      "[_handleDayChangeResponse] day change points",
       entityId,
       points.map((point) => ({
         value: point.value,
@@ -2701,6 +2887,7 @@ class InvestmentTrackerCard extends HTMLElement {
   }
 
   _handleHistoryResponse(entityId, entries) {
+    this._log("[_handleHistoryResponse] Received", entries?.length || 0, "entries for:", entityId);
     const points = (entries || [])
       .map((entry) => ({
         value: this._parseNumber(entry.s ?? entry.state),
@@ -2712,6 +2899,7 @@ class InvestmentTrackerCard extends HTMLElement {
         const bt = new Date(b.time).getTime();
         return at - bt;
       });
+    this._log("[_handleHistoryResponse] Parsed", points.length, "valid points for:", entityId);
     const previousPoints = this._historyCache?.[entityId] || [];
     if (points.length) {
       this._historyCache[entityId] = points;
@@ -2792,7 +2980,7 @@ class InvestmentTrackerCard extends HTMLElement {
             <label class="config-label">Verberg niet-gemapte assets</label>
             <input type="checkbox" id="hide_unmapped" />
           </div>
-          <div class="config-row">
+          <div class="config-row">s
             <label class="config-label">Toon refresh-knop</label>
             <input type="checkbox" id="show_refresh" />
           </div>
