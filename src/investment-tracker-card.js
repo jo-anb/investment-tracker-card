@@ -377,6 +377,9 @@ class InvestmentTrackerCard extends HTMLElement {
         .asset-list-header { display: flex; flex-direction: column; gap: 8px; }
         .asset-rows { flex: 1; overflow: auto; margin-top: 8px; display: flex; flex-direction: column; }
         .assets-header { font-weight: 600; margin-bottom: 8px; }
+        .filtered-sum { font-size: 13px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .filtered-sum-label { opacity: 0.8; font-weight: 500; }
+        .filtered-sum-value { font-weight: 700; color: var(--primary-color, #1976d2); }
         .asset-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--divider-color, #ddd); cursor: pointer; transition: background 0.2s ease; gap: 12px; }
         .asset-row:last-child { border-bottom: 0; }
         .asset-row.selected { background: rgba(59, 130, 246, 0.2); border-radius: 6px; border: 1px solid rgba(59, 130, 246, 0.4); padding: 7px 6px; }
@@ -402,7 +405,10 @@ class InvestmentTrackerCard extends HTMLElement {
         .asset-sort-option:hover, .asset-sort-option[data-selected="true"] { background: rgba(59, 130, 246, 0.15); }
         #asset-sort-direction { border: none; background: rgba(15, 23, 42, 0.08); border-radius: 50%; width: 34px; height: 34px; font-size: 18px; color: var(--primary-text-color, #111); cursor: pointer; }
         .asset-empty { padding: 16px 8px; font-size: 13px; opacity: 0.7; }
-        .asset-info { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+        .asset-info { display: flex; flex-direction: row; gap: 8px; align-items: flex-start; flex: 1 1 auto; min-width: 0; }
+        .asset-icon { width: 40px; height: 40px; min-width: 40px; border-radius: 50%; object-fit: contain; background: rgba(15, 23, 42, 0.06); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .asset-icon img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
+        .asset-info-text { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
         .asset-name-row { display: flex; align-items: flex-start; gap: 8px; }
         .asset-name { font-weight: 600; }
         .asset-link-button { border: 0; background: transparent; width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; padding: 4px; cursor: pointer; transition: background 0.2s ease, color 0.2s ease; align-self: flex-start; margin-left: 2px; }
@@ -415,6 +421,7 @@ class InvestmentTrackerCard extends HTMLElement {
         .asset-history-button:hover { background: rgba(0, 0, 0, 0.04); }
         .asset-history-button ha-icon { width: 10px; height: 10px; }
         .asset-meta { font-size: 12px; opacity: 0.6; }
+        .asset-staked { font-size: 11px; color: var(--warning-color, #ff9800); font-weight: 600; margin-top: 2px; }
         .asset-stats { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 110px; }
         .asset-price { font-size: 13px; color: var(--primary-text-color, #111); display:flex; align-items:center; gap:6px; }
         .asset-value { font-weight: 600; text-align: right; }
@@ -672,15 +679,27 @@ class InvestmentTrackerCard extends HTMLElement {
         }" data-entity="${stateObj.entity_id}" data-symbol="${attrs.symbol || ""}" data-broker="${attrs.broker || ""}" data-category="${assetCategory}" title="${this._escapeAttribute(
           mapLabel
         )}" aria-label="${this._escapeAttribute(mapLabel)}"><ha-icon icon="${mapIcon}"></ha-icon></button>`;
+        
+        // Display staked quantity if applicable
+        const stakedQty = Number(attrs.staked_quantity || 0);
+        const stakedDisplay = stakedQty > 0 ? `<div class="asset-staked">Staked: ${stakedQty}</div>` : "";
+        
+        // Display entity picture as icon if available
+        const entityPicture = attrs.entity_picture || "";
+        const iconDisplay = entityPicture ? `<div class="asset-icon"><img src="${entityPicture}" alt="${this._escapeAttribute(name)}" onerror="this.style.display='none'"></div>` : "";
+        
         return `
           <div class="${rowClass}" data-entity="${stateObj.entity_id}" data-name="${this._escapeAttribute(name)}" role="button" tabindex="0">
+            ${iconDisplay}
             <div class="asset-info">
-              <div class="asset-name-row">
-                <div class="asset-name">${name}</div>
-                ${historyButton}
-                ${mapButton}
+              <div class="asset-info-text">
+                <div class="asset-name-row">
+                  <div class="asset-name">${name}</div>
+                  ${historyButton}
+                  ${mapButton}
+                </div>
+                <div class="asset-meta">Qty: ${attrs.quantity ?? "-"}${stakedDisplay}</div>
               </div>
-              <div class="asset-meta">Qty: ${attrs.quantity ?? "-"}</div>
             </div>
             <div class="asset-stats">
               <div class="asset-price">
@@ -695,6 +714,32 @@ class InvestmentTrackerCard extends HTMLElement {
         `;
       })
       .join("");
+
+    // Calculate filtered assets sum if filter is active
+    let filteredSumDisplay = "";
+    if (this._metricFilter) {
+      const filteredAssets = assets.filter((stateObj) => {
+        const attrs = stateObj.attributes || {};
+        if (this.config.hide_unmapped && attrs.unmapped && !attrs.use_transaction_price) return false;
+        
+        const { type, value } = this._metricFilter;
+        if (type === "currency") {
+          return (attrs.currency || "").toUpperCase() === value.toUpperCase();
+        } else if (type === "sector") {
+          return (attrs.sector || "Unknown").toString().trim() === value;
+        } else if (type === "category") {
+          return (attrs.category || "Other").toString() === value;
+        }
+        return false;
+      });
+      
+      const filteredSum = filteredAssets.reduce((sum, stateObj) => {
+        return sum + (this._getAssetValue(stateObj) || 0);
+      }, 0);
+      
+      const filteredSumFormatted = this._formatNumber(filteredSum);
+      filteredSumDisplay = `<div class="filtered-sum"><span class="filtered-sum-label">Filtered Total:</span> <span class="filtered-sum-value">${portfolioSymbol}${filteredSumFormatted}</span></div>`;
+    }
 
     // Voeg dialoog toe voor remapping
     if (!this._remapDialog) {
@@ -775,6 +820,7 @@ class InvestmentTrackerCard extends HTMLElement {
         <div class="asset-list-header">
           ${header}
           ${filters}
+          ${filteredSumDisplay}
         </div>
         <div class="asset-rows">
           ${rows}
