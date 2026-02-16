@@ -2795,7 +2795,8 @@ class InvestmentTrackerCard extends HTMLElement {
           const assetQuantity = Number(attrs.quantity) || 0;
           const lastTransactionPrice = Number(lastTransaction.price) || 0;
           
-          // Calculate weighted average price from all transactions
+          // Calculate weighted average price from all PURCHASED transactions (price > 0)
+          // Exclude free rewards (Ontvangen, Staken) which have price = 0
           let totalQty = 0;
           let totalCost = 0;
           const transactions = Array.isArray(attrs.transactions) ? attrs.transactions : [];
@@ -2803,8 +2804,11 @@ class InvestmentTrackerCard extends HTMLElement {
           transactions.forEach((tx) => {
             const txQty = Number(tx.quantity) || 0;
             const txPrice = Number(tx.price) || 0;
-            totalQty += txQty;
-            totalCost += txQty * txPrice;
+            // Only include transactions with a cost basis (price > 0)
+            if (txPrice > 0) {
+              totalQty += txQty;
+              totalCost += txQty * txPrice;
+            }
           });
           
           const avgBuyPrice = totalQty > 0 ? totalCost / totalQty : 0;
