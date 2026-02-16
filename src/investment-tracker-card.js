@@ -177,6 +177,13 @@ class InvestmentTrackerCard extends HTMLElement {
     const totalPLNumber = this._getStateNumber(totalPLEntityId);
     const totalPLPctNumberSensor = this._getStateNumber(totalPLPctEntityId);
     
+    // Calculate total costs from all assets
+    const totalCostsNumber = assetStates.reduce((sum, asset) => {
+      const costs = asset.attributes?.costs || [];
+      const assetCostsSum = costs.reduce((assetSum, cost) => assetSum + Math.abs(cost.amount || 0), 0);
+      return sum + assetCostsSum;
+    }, 0);
+    
     // Add manual-priced assets to totals
     const manualPriceAdditions = this._calculateManualPriceAdditions(assetStates);
     const adjustedTotalValueNumber = totalValueNumber + manualPriceAdditions.value;
@@ -199,6 +206,7 @@ class InvestmentTrackerCard extends HTMLElement {
     const totalPLUnrealizedValue = this._getStateNumber(totalPLUnrealizedEntityId);
     const totalPLRealized = this._formatNumber(totalPLRealizedValue);
     const totalPLUnrealized = this._formatNumber(totalPLUnrealizedValue);
+    const totalCosts = this._formatNumber(totalCostsNumber);
     const totalActiveInvestedFoot = totalActiveInvestedEntityId
       ? `<div class="metric-foot">Active Invested: ${portfolioSymbol}${totalActiveInvested}</div>`
       : "";
@@ -270,6 +278,7 @@ class InvestmentTrackerCard extends HTMLElement {
             <div class="metric-card">
               <div class="metric-title">Total Value</div>
               <div class="metric-value">${portfolioSymbol}${totalValue}</div>
+              <div class="metric-foot">Costs: ${portfolioSymbol}${totalCosts}</div>
             </div>
             <div class="metric-card">
               <div class="metric-title">Day Change</div>
