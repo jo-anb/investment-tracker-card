@@ -116,7 +116,7 @@ Releases follow [Semantic Versioning](https://semver.org/):
 - **PATCH**: Bug fixes, no API changes
 
 ### Publishing a Release
-The release process is **automated via CI/CD**:
+The release process is **automated via CI/CD** using a GitHub App:
 
 1. **Create a Pull Request** with your changes
 2. **Merge to main** once reviewed and approved
@@ -126,6 +126,8 @@ The release process is **automated via CI/CD**:
    - Generates a CHANGELOG entry
    - Creates a GitHub release
    - Triggers HACS update
+
+**Note**: The release workflow uses a GitHub App for authentication. See [GitHub App Setup](../.github/GITHUB_APP_SETUP.md) for configuration details.
 
 ### Manual Release (If Needed)
 If you need to manually release:
