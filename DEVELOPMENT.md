@@ -127,7 +127,7 @@ The release process is **automated via CI/CD** using a GitHub App:
    - Creates a GitHub release
    - Triggers HACS update
 
-**Note**: The release workflow uses a GitHub App for authentication. See [GitHub App Setup](../.github/GITHUB_APP_SETUP.md) for configuration details.
+**Note**: The release workflow uses a GitHub App for authentication. See [GitHub App Setup](.github/GITHUB_APP_SETUP.md) for configuration details.
 
 ### Manual Release (If Needed)
 If you need to manually release:
