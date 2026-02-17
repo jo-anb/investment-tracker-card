@@ -6,8 +6,19 @@
     [
       "@semantic-release/release-notes-generator",
       {
+        "preset": "conventionalcommits",
         "writerOpts": {
-          "commitPartial": "#### {{subject}}\n{{#if body}}\n{{body}}\n{{/if}}"
+          "types": [
+            { "type": "feat", "section": "🚀 Features", "hidden": false },
+            { "type": "fix", "section": "🐛 Bug Fixes", "hidden": false },
+            { "type": "perf", "section": "⚡ Performance", "hidden": false },
+            { "type": "docs", "section": "📚 Documentation", "hidden": false },
+            { "type": "style", "section": "🎨 Styling", "hidden": false },
+            { "type": "test", "section": "✅ Tests", "hidden": false },
+            { "type": "chore", "section": "🔧 Chores", "hidden": true }
+          ],
+          "commitsSort": ["subject", "scope"],
+          "commitPartial": "- {{#if scope}}**{{scope}}**: {{/if}}{{subject}}\n{{#if body}}  {{body}}\n{{/if}}"
         }
       }
     ],
